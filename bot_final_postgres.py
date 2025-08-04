@@ -196,9 +196,7 @@ Use os botões abaixo para navegar:
 🚀 Sistema 100% operacional!"""
     await update.message.reply_text(mensagem, parse_mode='Markdown', reply_markup=criar_teclado_principal())
 
-# --------- CONTINUA... ---------
 # --------- CONTINUAÇÃO DO BOT ---------
-# (cadastro, listagem, confirmação etc)
 
 @verificar_admin
 async def iniciar_cadastro(update, context):
@@ -397,21 +395,42 @@ async def receber_vencimento(update, context):
                 reply_markup=criar_teclado_vencimento())
             return VENCIMENTO
     context.user_data['vencimento'] = data_str
-    data_obj = datetime.strptime(data_str, '%Y-%m-%d')
     dados = context.user_data
-    data_formatada = data_obj.strftime('%d/%m/%Y')
-    resumo = f"""📋 *CONFIRMAR CADASTRO*
+
+    # Validação dos campos obrigatórios
+    campos_obrigatorios = ['nome', 'telefone', 'pacote', 'valor', 'servidor', 'vencimento']
+    for campo in campos_obrigatorios:
+        if campo not in dados or not str(dados[campo]).strip():
+            await update.message.reply_text(
+                f"❌ Erro: campo '{campo}' não preenchido.",
+                reply_markup=criar_teclado_principal())
+            return ConversationHandler.END
+
+    try:
+        data_obj = datetime.strptime(dados['vencimento'], '%Y-%m-%d')
+        data_formatada = data_obj.strftime('%d/%m/%Y')
+        resumo = f"""📋 *CONFIRMAR CADASTRO*
 
 📝 *Nome:* {dados['nome']}
 📱 *Telefone:* {dados['telefone']}
 📦 *Pacote:* {dados['pacote']}
-💰 *Valor:* R$ {dados['valor']:.2f}
+💰 *Valor:* R$ {float(dados['valor']):.2f}
 🖥️ *Servidor:* {dados['servidor']}
 📅 *Vencimento:* {data_formatada}
 
 Os dados estão corretos?"""
-    await update.message.reply_text(resumo, parse_mode='Markdown', reply_markup=criar_teclado_confirmar())
-    return CONFIRMAR
+        if not resumo.strip():
+            await update.message.reply_text(
+                "❌ Erro interno: resumo vazio.",
+                reply_markup=criar_teclado_principal())
+            return ConversationHandler.END
+        await update.message.reply_text(resumo, parse_mode='Markdown', reply_markup=criar_teclado_confirmar())
+        return CONFIRMAR
+    except Exception as e:
+        await update.message.reply_text(
+            f"❌ Erro interno (confirmação): {str(e)}",
+            reply_markup=criar_teclado_principal())
+        return ConversationHandler.END
 
 async def confirmar_cadastro(update, context):
     if update.message.text == "❌ Cancelar":
@@ -460,11 +479,10 @@ async def confirmar_cadastro(update, context):
         except Exception as e:
             logger.error(f"Erro ao cadastrar cliente: {e}")
             await update.message.reply_text(
-                "❌ Erro interno. Tente novamente mais tarde.",
+                f"❌ Erro interno: {str(e)}",
                 reply_markup=criar_teclado_principal())
             context.user_data.clear()
             return ConversationHandler.END
-    # Edição manual por número
     try:
         opcao = int(update.message.text)
         if opcao == 1:
@@ -497,7 +515,6 @@ async def cancelar_cadastro(update, context):
     await update.message.reply_text("❌ Cadastro cancelado.", reply_markup=criar_teclado_principal())
     return ConversationHandler.END
 
-# CONTINUA...
 # --------- LISTAGEM E BUSCA DE CLIENTES ---------
 @verificar_admin
 async def listar_clientes(update, context):
@@ -510,7 +527,6 @@ async def listar_clientes(update, context):
                 "Use ➕ Adicionar Cliente para começar!",
                 reply_markup=criar_teclado_principal())
             return
-        # Ordenar por data de vencimento
         clientes_ordenados = []
         for cliente in clientes:
             try:
@@ -533,7 +549,7 @@ async def listar_clientes(update, context):
 📊 *Resumo:* {total_clientes} clientes
 🔴 {vencidos} vencidos • ⚠️ {vencendo_hoje} hoje • 🟡 {vencendo_breve} em breve • 🟢 {ativos} ativos
 
-💡 *Clique em um cliente para ver detalhes:*"""
+💡 *Os 50 primeiros clientes (ordem de vencimento):*"""
         keyboard = []
         for cliente in clientes_ordenados[:50]:
             dias_restantes = cliente['dias_restantes']
@@ -553,10 +569,6 @@ async def listar_clientes(update, context):
             ])
         if total_clientes > 50:
             mensagem += f"\n\n⚠️ *Mostrando primeiros 50 de {total_clientes} clientes*\nUse 🔍 Buscar Cliente para encontrar outros."
-        keyboard.append([
-            InlineKeyboardButton("🔄 Atualizar Lista", callback_data="atualizar_lista"),
-            InlineKeyboardButton("📊 Relatório", callback_data="gerar_relatorio")
-        ])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(mensagem, parse_mode='Markdown', reply_markup=reply_markup)
     except Exception as e:
@@ -656,7 +668,6 @@ def main():
 
     app = Application.builder().token(token).build()
 
-    # ConversationHandler para cadastro escalonável
     cadastro_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex("^➕ Adicionar Cliente$"), iniciar_cadastro)
@@ -682,7 +693,6 @@ def main():
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(cadastro_handler)
 
-    # Handler para o botão de listar clientes
     botoes_filter = filters.Regex(
         "^(👥 Listar Clientes|➕ Adicionar Cliente|📊 Relatórios|🔍 Buscar Cliente|❓ Ajuda)$"
     )
