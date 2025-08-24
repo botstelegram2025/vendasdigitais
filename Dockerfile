@@ -31,14 +31,7 @@ COPY --chown=app:app . .
 RUN npm ci --only=production --ignore-scripts
 
 # Install Python dependencies
-RUN if [ -f "pyproject.toml" ]; then \
-        pip3 install --no-cache-dir -e .; \
-    elif [ -f "requirements.txt" ]; then \
-        pip3 install --no-cache-dir -r requirements.txt; \
-    else \
-        echo "ERROR: No Python dependencies file found!"; \
-        exit 1; \
-    fi
+RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Create necessary directories
 RUN mkdir -p /app/logs /app/sessions /app/backups && \
