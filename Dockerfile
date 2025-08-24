@@ -64,48 +64,46 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
     CMD curl -f http://localhost:3001/health || exit 1
 
 # Create startup script
-RUN cat > /app/start.sh << 'EOF'
-#!/bin/bash
-set -e
-
-echo "🚀 Starting Client Management Bot..."
-
-# Start WhatsApp service in background
-echo "📱 Starting WhatsApp service..."
-cd /app/whatsapp && node whatsapp_baileys_multi.js &
-WHATSAPP_PID=$!
-
-# Wait for WhatsApp service to be ready
-echo "⏳ Waiting for WhatsApp service..."
-for i in {1..30}; do
-    if curl -s http://localhost:3001/health > /dev/null; then
-        echo "✅ WhatsApp service is ready"
-        break
-    fi
-    echo "Waiting for WhatsApp service... ($i/30)"
-    sleep 2
-done
-
-# Start main bot application
-echo "🤖 Starting Telegram bot..."
-cd /app && python3 main.py &
-BOT_PID=$!
-
-# Function to handle shutdown
-cleanup() {
-    echo "🛑 Shutting down services..."
-    kill $BOT_PID $WHATSAPP_PID 2>/dev/null || true
-    wait
-    echo "✅ Shutdown complete"
-    exit 0
-}
-
-# Set up signal handlers
-trap cleanup SIGTERM SIGINT
-
-# Wait for either process to exit
-wait $BOT_PID $WHATSAPP_PID
-EOF
+RUN echo '#!/bin/bash' > /app/start.sh && \
+    echo 'set -e' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo 'echo "🚀 Starting Client Management Bot..."' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo '# Start WhatsApp service in background' >> /app/start.sh && \
+    echo 'echo "📱 Starting WhatsApp service..."' >> /app/start.sh && \
+    echo 'cd /app/whatsapp && node whatsapp_baileys_multi.js &' >> /app/start.sh && \
+    echo 'WHATSAPP_PID=$!' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo '# Wait for WhatsApp service to be ready' >> /app/start.sh && \
+    echo 'echo "⏳ Waiting for WhatsApp service..."' >> /app/start.sh && \
+    echo 'for i in {1..30}; do' >> /app/start.sh && \
+    echo '    if curl -s http://localhost:3001/health > /dev/null; then' >> /app/start.sh && \
+    echo '        echo "✅ WhatsApp service is ready"' >> /app/start.sh && \
+    echo '        break' >> /app/start.sh && \
+    echo '    fi' >> /app/start.sh && \
+    echo '    echo "Waiting for WhatsApp service... ($i/30)"' >> /app/start.sh && \
+    echo '    sleep 2' >> /app/start.sh && \
+    echo 'done' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo '# Start main bot application' >> /app/start.sh && \
+    echo 'echo "🤖 Starting Telegram bot..."' >> /app/start.sh && \
+    echo 'cd /app && python3 main.py &' >> /app/start.sh && \
+    echo 'BOT_PID=$!' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo '# Function to handle shutdown' >> /app/start.sh && \
+    echo 'cleanup() {' >> /app/start.sh && \
+    echo '    echo "🛑 Shutting down services..."' >> /app/start.sh && \
+    echo '    kill $BOT_PID $WHATSAPP_PID 2>/dev/null || true' >> /app/start.sh && \
+    echo '    wait' >> /app/start.sh && \
+    echo '    echo "✅ Shutdown complete"' >> /app/start.sh && \
+    echo '    exit 0' >> /app/start.sh && \
+    echo '}' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo '# Set up signal handlers' >> /app/start.sh && \
+    echo 'trap cleanup SIGTERM SIGINT' >> /app/start.sh && \
+    echo '' >> /app/start.sh && \
+    echo '# Wait for either process to exit' >> /app/start.sh && \
+    echo 'wait $BOT_PID $WHATSAPP_PID' >> /app/start.sh
 
 RUN chmod +x /app/start.sh
 
