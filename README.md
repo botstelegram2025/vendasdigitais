@@ -6,8 +6,9 @@ Este pacote contém todas as correções necessárias para deploy no Railway:
 
 - **✅ Python3 Fix**: Todos os comandos `python` foram corrigidos para `python3`
 - **✅ Node.js 20 Fix**: Atualizado de Node.js 18 para Node.js 20+ (required by @whiskeysockets/baileys)
-- **✅ Dockerfile Ultra-Simplificado**: Usa requirements.txt diretamente, sem lógica condicional
+- **✅ Dockerfile Robusto**: Instala todas as bibliotecas do sistema necessárias para dependências Python
 - **✅ NPM Fix**: Adiciona `--ignore-scripts` para evitar erros de build
+- **✅ Python Dependencies**: Instala build tools e dev headers para cryptography, Pillow, psycopg2
 - **✅ Sessions Fix**: Criação automática da pasta sessions (não mais erro de "not found")
 - **✅ Procfile Fix**: Comando de inicialização corrigido
 - **✅ Makefile Fix**: Todos os comandos usando `python3`
@@ -64,7 +65,7 @@ git push -u origin main
 1. **"python: command not found"** ❌ → **Usando python3** ✅
 2. **"Node.js 20+ required by baileys"** ❌ → **Atualizado para Node.js 20** ✅
 3. **"npm ci failed with exit code 1"** ❌ → **Dockerfile simplificado** ✅
-4. **"Python dependencies not found"** ❌ → **Usa requirements.txt diretamente** ✅
+4. **"pip3 install failed exit code 1"** ❌ → **Instala build dependencies** ✅
 5. **"sessions: not found"** ❌ → **Pasta criada automaticamente** ✅
 6. **Multi-stage build errors** ❌ → **Single-stage build** ✅
 7. **Conditional logic errors** ❌ → **Comando direto sem condições** ✅

@@ -11,11 +11,19 @@ RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
     python3-venv \
+    python3-dev \
+    build-essential \
     gcc \
     g++ \
     libpq-dev \
+    libffi-dev \
+    libssl-dev \
+    libjpeg-dev \
+    libpng-dev \
+    libfreetype6-dev \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && pip3 install --upgrade pip setuptools wheel
 
 # Create app user for security
 RUN groupadd --gid 1001 app && \
@@ -30,8 +38,9 @@ COPY --chown=app:app . .
 # Install Node.js dependencies
 RUN npm ci --only=production --ignore-scripts
 
-# Install Python dependencies
-RUN pip3 install --no-cache-dir -r requirements.txt
+# Install Python dependencies with better error handling
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir --timeout=300 -r requirements.txt
 
 # Create necessary directories
 RUN mkdir -p /app/logs /app/sessions /app/backups && \
