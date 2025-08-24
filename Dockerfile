@@ -1,61 +1,72 @@
-# Base com Python pronto
-FROM python:3.12-slim
+# Railway Deployment - Python Base + Node.js
+FROM python:3.11-slim
 
-ENV DEBIAN_FRONTEND=noninteractive \
-    PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    NODE_ENV=production
+# Set environment variables
+ENV NODE_ENV=production
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONDONTWRITEBYTECODE=1
 
+# Install Node.js 20 and essential tools
+RUN apt-get update && apt-get install -y \
+    curl \
+    build-essential \
+    libpq-dev \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && pip install --upgrade pip
+
+# Create app user for security
+RUN groupadd --gid 1001 app && \
+    useradd --uid 1001 --gid app --shell /bin/bash --create-home app
+
+# Set working directory
 WORKDIR /app
 
-# 1) Instala Node 20 via NodeSource (estável no Railway)
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
- && mkdir -p /etc/apt/keyrings \
- && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
-    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
- && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
-    > /etc/apt/sources.list.d/nodesource.list \
- && apt-get update && apt-get install -y --no-install-recommends nodejs \
- && rm -rf /var/lib/apt/lists/* \
- && python -m pip install --upgrade pip
+# Copy all files
+COPY --chown=app:app . .
 
-# 2) Dependências Python (sem compilar nada)
-#    -> use psycopg2-binary no requirements.txt
-COPY requirements.txt .
-RUN pip install --no-cache-dir --timeout=300 -r requirements.txt
+# Install Node.js dependencies
+RUN npm ci --only=production --ignore-scripts
 
-# 3) Dependências Node (ajuste o caminho se o package.json estiver em subpasta)
-COPY package*.json ./
-RUN npm ci --omit=dev --ignore-scripts
+# Install Python dependencies with better error handling
+COPY requirements.txt ./
+RUN pip3 install --no-cache-dir --timeout=300 -r requirements.txt
 
-# 4) Código
-COPY . .
+# Create necessary directories
+RUN mkdir -p /app/logs /app/sessions /app/backups && \
+    chown -R app:app /app
 
-# 5) Pastas e permissões
-RUN mkdir -p /app/logs /app/sessions /app/backups
+# Switch to app user
+USER app
 
-# 6) Ports (ajuste se necessário)
+# Expose ports
 EXPOSE 5000 3001
 
-# 7) Healthcheck do serviço Node (ajuste rota/porta)
+# Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD curl -fsS http://localhost:3001/health || exit 1
+    CMD curl -f http://localhost:3001/health || exit 1
 
-# 8) Start de ambos os processos (ajuste nomes/paths)
-#    - Se seu WhatsApp está em subpasta (ex.: whatsapp/), troque o comando de node abaixo.
-RUN printf '%s\n' \
-  '#!/bin/bash' \
-  'set -e' \
-  'echo "🚀 Starting..."' \
-  'echo "📱 Starting WhatsApp..."' \
-  'node whatsapp_baileys_multi.js & WHATSAPP_PID=$!' \
-  'sleep 2' \
-  'echo "🤖 Starting Telegram bot..."' \
-  'python3 main.py & BOT_PID=$!' \
-  'cleanup(){ echo "🛑 Shutting down..."; kill $BOT_PID $WHATSAPP_PID 2>/dev/null || true; wait; }' \
-  'trap cleanup SIGTERM SIGINT' \
-  'wait $BOT_PID $WHATSAPP_PID' \
-  > /app/start.sh && chmod +x /app/start.sh
+# Create startup script
+RUN echo '#!/bin/bash' > /app/start.sh && \
+    echo 'set -e' >> /app/start.sh && \
+    echo 'echo "🚀 Starting Railway Deployment..."' >> /app/start.sh && \
+    echo 'echo "📱 Starting WhatsApp service..."' >> /app/start.sh && \
+    echo 'node whatsapp_baileys_multi.js &' >> /app/start.sh && \
+    echo 'WHATSAPP_PID=$!' >> /app/start.sh && \
+    echo 'sleep 3' >> /app/start.sh && \
+    echo 'echo "🤖 Starting Telegram bot..."' >> /app/start.sh && \
+    echo 'python3 main.py &' >> /app/start.sh && \
+    echo 'BOT_PID=$!' >> /app/start.sh && \
+    echo 'cleanup() {' >> /app/start.sh && \
+    echo '    echo "🛑 Shutting down..."' >> /app/start.sh && \
+    echo '    kill $BOT_PID $WHATSAPP_PID 2>/dev/null || true' >> /app/start.sh && \
+    echo '    wait' >> /app/start.sh && \
+    echo '    exit 0' >> /app/start.sh && \
+    echo '}' >> /app/start.sh && \
+    echo 'trap cleanup SIGTERM SIGINT' >> /app/start.sh && \
+    echo 'wait $BOT_PID $WHATSAPP_PID' >> /app/start.sh && \
+    chmod +x /app/start.sh
 
+# Start services
 CMD ["/app/start.sh"]
