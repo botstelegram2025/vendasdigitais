@@ -1,29 +1,21 @@
-# Simple Dockerfile for Railway Deployment
-FROM node:20-slim
+# Ultra-Simple Dockerfile for Railway Deployment
+FROM node:20
 
 # Set environment variables
 ENV NODE_ENV=production
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 
-# Install system dependencies including Python
+# Install Python and essential build tools
 RUN apt-get update && apt-get install -y \
     python3 \
     python3-pip \
-    python3-venv \
     python3-dev \
     build-essential \
-    gcc \
-    g++ \
     libpq-dev \
-    libffi-dev \
-    libssl-dev \
-    libjpeg-dev \
-    libpng-dev \
-    libfreetype6-dev \
     curl \
     && rm -rf /var/lib/apt/lists/* \
-    && pip3 install --upgrade pip setuptools wheel
+    && pip3 install --upgrade pip
 
 # Create app user for security
 RUN groupadd --gid 1001 app && \

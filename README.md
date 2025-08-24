@@ -6,7 +6,7 @@ Este pacote contém todas as correções necessárias para deploy no Railway:
 
 - **✅ Python3 Fix**: Todos os comandos `python` foram corrigidos para `python3`
 - **✅ Node.js 20 Fix**: Atualizado de Node.js 18 para Node.js 20+ (required by @whiskeysockets/baileys)
-- **✅ Dockerfile Robusto**: Instala todas as bibliotecas do sistema necessárias para dependências Python
+- **✅ Dockerfile Mínimo**: Usa node:20 (não slim) + dependências essenciais apenas
 - **✅ NPM Fix**: Adiciona `--ignore-scripts` para evitar erros de build
 - **✅ Python Dependencies**: Instala build tools e dev headers para cryptography, Pillow, psycopg2
 - **✅ Sessions Fix**: Criação automática da pasta sessions (não mais erro de "not found")
