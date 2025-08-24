@@ -1343,7 +1343,7 @@ async def _send_qr_image(context, chat_id: int, data_url_or_b64: str, caption: s
         await context.bot.send_photo(
             chat_id=chat_id,
             photo=qr_photo,
-            caption=caption or "📲 **QR Code WhatsApp**
+           caption=caption or "📲 **QR Code WhatsApp**\n\nEscaneie para conectar",
 
 Escaneie para conectar",
             parse_mode='Markdown'
