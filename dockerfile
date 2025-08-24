@@ -1,4 +1,4 @@
-# Dockerfile (Python + Node 20)
+# Dockerfile (Python3 + Node 20)
 FROM python3:3.12-slim
 
 # Instala Node.js 20 via NodeSource
