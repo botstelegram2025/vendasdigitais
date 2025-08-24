@@ -17,8 +17,9 @@ class DatabaseService:
         )
         self.SessionLocal = scoped_session(sessionmaker(bind=self.engine))
         self.create_tables()
-        self.create_default_templates()
-    
+        # ❌ NÃO rode seed no boot: evita user_id=None em coluna NOT NULL
+        # self.create_default_templates()  # removido
+
     def create_tables(self):
         """Create all database tables"""
         try:
@@ -27,7 +28,7 @@ class DatabaseService:
         except Exception as e:
             logger.error(f"Error creating database tables: {e}")
             raise
-    
+
     @contextmanager
     def get_session(self):
         """Get database session with automatic cleanup"""
@@ -41,10 +42,11 @@ class DatabaseService:
             raise
         finally:
             session.close()
-    
-    def create_default_templates(self):
-        """Create default message templates"""
-        default_templates = [
+
+    # ---------- NOVO: templates padrão como função util ----------
+    @staticmethod
+    def _default_templates():
+        return [
             {
                 'name': 'Lembrete 2 dias antes',
                 'template_type': 'reminder_2days',
@@ -82,17 +84,46 @@ class DatabaseService:
                 'content': 'Olá {client_name}! ✅\n\nSeu plano "{plan_name}" foi renovado com sucesso!\n\nNovo vencimento: {due_date}\nValor: R$ {plan_price}\n\nObrigado pela confiança! Continue aproveitando nossos serviços. 🚀'
             }
         ]
-        
+
+    # ---------- NOVO: seed POR USUÁRIO ----------
+    def create_default_templates_for_user(self, user_id: int) -> None:
+        """
+        Cria os templates padrão para um usuário específico.
+        Use quando o usuário já existir (ex.: após /start).
+        Mantém integridade quando message_templates.user_id é NOT NULL.
+        """
+        if not isinstance(user_id, int):
+            raise ValueError("user_id inválido para seed de templates.")
+
         with self.get_session() as session:
-            for template_data in default_templates:
-                existing = session.query(MessageTemplate).filter_by(
-                    template_type=template_data['template_type']
-                ).first()
-                
-                if not existing:
-                    template = MessageTemplate(**template_data)
-                    session.add(template)
-                    logger.info(f"Created default template: {template_data['name']}")
+            # evita flush prematuro caso exista objeto pendente
+            with session.no_autoflush:
+                for tpl in self._default_templates():
+                    exists = (
+                        session.query(MessageTemplate)
+                        .filter_by(user_id=user_id, template_type=tpl['template_type'])
+                        .first()
+                    )
+                    if not exists:
+                        session.add(MessageTemplate(
+                            user_id=user_id,
+                            name=tpl['name'],
+                            template_type=tpl['template_type'],
+                            subject=tpl['subject'],
+                            content=tpl['content'],
+                            is_active=True
+                        ))
+                        logger.info(f"[seed] Default template criado para user_id={user_id}: {tpl['name']}")
+
+    # ---------- (opcional) método legado desativado ----------
+    def create_default_templates(self):
+        """
+        (Desativado) Não usar. O seed global sem user_id causava violação de NOT NULL.
+        Mantenho o método apenas para evitar importações quebradas.
+        """
+        logger.warning("create_default_templates() está desativado. "
+                       "Use create_default_templates_for_user(user_id).")
+
 
 # Global database service instance
 db_service = DatabaseService()
