@@ -1,48 +1,61 @@
-# Node + Python em Alpine
-FROM node:20-alpine
+# Base com Python pronto
+FROM python:3.12-slim
 
-ENV NODE_ENV=production \
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PYTHONDONTWRITEBYTECODE=1
+    PIP_NO_CACHE_DIR=1 \
+    NODE_ENV=production
 
-# Python + pip + utilitários (sem compilar nada)
-RUN apk add --no-cache python3 py3-pip curl ca-certificates \
- && python3 -m pip install --upgrade pip
-
-# Usuário sem privilégios
-RUN addgroup -g 1001 app && adduser -D -u 1001 -G app app
 WORKDIR /app
 
-# Instalar deps Node (ajuste se seu package.json estiver em subpasta)
+# 1) Instala Node 20 via NodeSource (estável no Railway)
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates gnupg \
+ && mkdir -p /etc/apt/keyrings \
+ && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+    | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+ && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+    > /etc/apt/sources.list.d/nodesource.list \
+ && apt-get update && apt-get install -y --no-install-recommends nodejs \
+ && rm -rf /var/lib/apt/lists/* \
+ && python -m pip install --upgrade pip
+
+# 2) Dependências Python (sem compilar nada)
+#    -> use psycopg2-binary no requirements.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir --timeout=300 -r requirements.txt
+
+# 3) Dependências Node (ajuste o caminho se o package.json estiver em subpasta)
 COPY package*.json ./
 RUN npm ci --omit=dev --ignore-scripts
 
-# Instalar deps Python (sua lista corrigida)
-COPY requirements.txt .
-RUN python3 -m pip install --no-cache-dir --timeout=300 -r requirements.txt
-
-# Copiar o resto
+# 4) Código
 COPY . .
-RUN mkdir -p /app/logs /app/sessions /app/backups \
- && chown -R app:app /app
-USER app
 
+# 5) Pastas e permissões
+RUN mkdir -p /app/logs /app/sessions /app/backups
+
+# 6) Ports (ajuste se necessário)
 EXPOSE 5000 3001
 
-# healthcheck (ajuste a rota)
+# 7) Healthcheck do serviço Node (ajuste rota/porta)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-  CMD wget -qO- http://localhost:3001/health >/dev/null || exit 1
+  CMD curl -fsS http://localhost:3001/health || exit 1
 
-# start dos dois processos (ajuste nomes/paths)
-RUN echo '#!/bin/sh' > /app/start.sh && \
-    echo 'set -e' >> /app/start.sh && \
-    echo 'echo "📱 start whatsapp..."' >> /app/start.sh && \
-    echo 'node whatsapp_baileys_multi.js & WHATSAPP_PID=$!' >> /app/start.sh && \
-    echo 'sleep 2' >> /app/start.sh && \
-    echo 'echo "🤖 start bot..."' >> /app/start.sh && \
-    echo 'python3 main.py & BOT_PID=$!' >> /app/start.sh && \
-    echo 'trap "kill $BOT_PID $WHATSAPP_PID 2>/dev/null || true; wait; exit 0" TERM INT' >> /app/start.sh && \
-    echo 'wait $BOT_PID $WHATSAPP_PID' >> /app/start.sh && \
-    chmod +x /app/start.sh
+# 8) Start de ambos os processos (ajuste nomes/paths)
+#    - Se seu WhatsApp está em subpasta (ex.: whatsapp/), troque o comando de node abaixo.
+RUN printf '%s\n' \
+  '#!/bin/bash' \
+  'set -e' \
+  'echo "🚀 Starting..."' \
+  'echo "📱 Starting WhatsApp..."' \
+  'node whatsapp_baileys_multi.js & WHATSAPP_PID=$!' \
+  'sleep 2' \
+  'echo "🤖 Starting Telegram bot..."' \
+  'python3 main.py & BOT_PID=$!' \
+  'cleanup(){ echo "🛑 Shutting down..."; kill $BOT_PID $WHATSAPP_PID 2>/dev/null || true; wait; }' \
+  'trap cleanup SIGTERM SIGINT' \
+  'wait $BOT_PID $WHATSAPP_PID' \
+  > /app/start.sh && chmod +x /app/start.sh
 
 CMD ["/app/start.sh"]
