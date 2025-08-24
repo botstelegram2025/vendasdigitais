@@ -1,5 +1,5 @@
-# Dockerfile (Python3 + Node 20)
-FROM python3:3.12-slim
+# Dockerfile (Python + Node 20)
+FROM python:3.12-slim
 
 # Instala Node.js 20 via NodeSource
 RUN apt-get update && apt-get install -y curl ca-certificates gnupg \
