@@ -1,5 +1,7 @@
 apscheduler==3.10.4
 cryptography==43.0.3
+flask==3.0.3
+flask-sqlalchemy==3.1.1
 mercadopago==2.2.1
 pillow==10.4.0
 psutil==6.0.0
@@ -11,3 +13,4 @@ qrcode==7.4.2
 requests==2.32.3
 sqlalchemy==2.0.34
 uvloop==0.20.0
+gunicorn==23.0.0
