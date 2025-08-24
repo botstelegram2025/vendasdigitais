@@ -310,10 +310,11 @@ class WhatsAppService:
     
     def get_qr_code(self, user_id: int) -> Dict[str, Any]:
         """
-        Get QR code for WhatsApp connection
+        Get QR code for WhatsApp connection - Uses status endpoint
         """
         try:
-            url = f"{self.baileys_url}/qr/{user_id}"
+            # Use status endpoint instead of non-existent /qr endpoint
+            url = f"{self.baileys_url}/status/{user_id}"
             
             response = requests.get(
                 url,
@@ -323,7 +324,20 @@ class WhatsAppService:
             
             if response.status_code == 200:
                 result = response.json()
-                return result
+                # Extract QR code from status response
+                if result.get('success') and result.get('qrCode'):
+                    return {
+                        'success': True,
+                        'qrCode': result.get('qrCode'),
+                        'state': result.get('state'),
+                        'connected': result.get('connected')
+                    }
+                else:
+                    return {
+                        'success': False,
+                        'error': 'QR Code not available in status',
+                        'details': result
+                    }
             else:
                 return {
                     'success': False,

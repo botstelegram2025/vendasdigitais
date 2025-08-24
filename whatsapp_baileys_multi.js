@@ -419,10 +419,15 @@ class UserWhatsAppSession {
                 // Force disconnect and cleanup
                 if (this.sock) {
                     try {
+                        // Properly close WebSocket without triggering error events
+                        if (this.sock.ws && this.sock.ws.readyState === 1) {
+                            this.sock.ws.close();
+                        }
                         await this.sock.end();
                         await new Promise(resolve => setTimeout(resolve, 1000)); // Wait 1 sec
                     } catch (e) {
-                        console.log(`⚠️ Error ending socket for user ${this.userId}: ${e.message}`);
+                        // Ignore expected WebSocket close errors during forced disconnect
+                        console.log(`⚠️ Expected close error for user ${this.userId}: ${e.message}`);
                     }
                     this.sock = null;
                 }
@@ -552,9 +557,14 @@ class UserWhatsAppSession {
             // Disconnect if connected
             if (this.sock) {
                 try {
+                    // Properly close WebSocket without triggering error events
+                    if (this.sock.ws && this.sock.ws.readyState === 1) {
+                        this.sock.ws.close();
+                    }
                     await this.sock.end();
                 } catch (e) {
-                    console.log(`⚠️ Error ending socket for user ${this.userId}: ${e.message}`);
+                    // Ignore expected WebSocket close errors during forced disconnect
+                    console.log(`⚠️ Expected close error for user ${this.userId}: ${e.message}`);
                 }
                 this.sock = null;
             }
