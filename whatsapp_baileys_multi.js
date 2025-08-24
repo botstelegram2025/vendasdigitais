@@ -190,9 +190,18 @@ class UserWhatsAppSession {
                         console.log(`🛑 Connection terminated by server for user ${this.userId}, waiting before retry...`);
                         this.reconnectTimeout = setTimeout(() => this.start(false), 10000);
                     } else if (statusCode === 401) {
-                        // Unauthorized - try session recovery first
-                        console.log(`🔐 Auth error for user ${this.userId}, attempting session recovery...`);
-                        this.reconnectTimeout = setTimeout(() => this.start(false), 5000);
+                        // Unauthorized - ALWAYS force new QR for auth errors
+                        console.log(`🔐 Auth error 401 for user ${this.userId}, forcing clean QR generation...`);
+                        // Clean corrupted session
+                        try {
+                            if (fs.existsSync(this.authPath)) {
+                                fs.unlinkSync(this.authPath);
+                                console.log(`🗑️ Removed corrupted session file for user ${this.userId}`);
+                            }
+                        } catch (cleanError) {
+                            console.log(`⚠️ Error removing session file: ${cleanError.message}`);
+                        }
+                        this.reconnectTimeout = setTimeout(() => this.start(true), 2000);
                     } else if (statusCode === 440) {
                         // Conflict error - wait longer to avoid conflicts
                         console.log(`⚡ Conflict error for user ${this.userId}, backing off...`);
