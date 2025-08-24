@@ -10,6 +10,14 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Railway environment detection
+const isRailway = process.env.RAILWAY_ENVIRONMENT_NAME !== undefined;
+console.log(`🌍 Environment: ${isRailway ? 'Railway' : 'Local'}`);
+
+if (isRailway) {
+    console.log('⚡ Railway environment detected - optimizing for cloud deployment');
+}
+
 // Map para armazenar sessões de cada usuário
 const userSessions = new Map();
 
@@ -58,6 +66,7 @@ class UserWhatsAppSession {
         this.reconnectAttempts = 0;
         this.maxReconnectAttempts = 5;
         this.pairingCode = null; // Store pairing code
+        this.phoneNumber = null; // Store phone number for pairing
     }
     
     async start(forceNew = false) {
@@ -102,13 +111,13 @@ class UserWhatsAppSession {
             this.sock = makeWASocket({
                 auth: state,
                 printQRInTerminal: false,
-                defaultQueryTimeoutMs: 120000, // Increased timeout
-                connectTimeoutMs: 120000,
+                defaultQueryTimeoutMs: 180000, // Railway optimized timeout
+                connectTimeoutMs: 180000, // Railway needs longer timeout
                 browser: [`User_${this.userId}`, 'Chrome', '22.04.4'], // Unique browser per user
                 syncFullHistory: false,
                 markOnlineOnConnect: true, // Keep connection visible
                 generateHighQualityLinkPreview: false,
-                retryRequestDelayMs: 3000, // Increased retry delay
+                retryRequestDelayMs: 5000, // Railway optimized retry delay
                 maxMsgRetryCount: 5, // More retries
                 shouldSyncHistoryMessage: () => false,
                 keepAliveIntervalMs: 30000, // More frequent keepalive
@@ -116,8 +125,8 @@ class UserWhatsAppSession {
                 msgRetryCounterCache: new Map(),
                 shouldIgnoreJid: () => false,
                 // Enhanced connection stability options
-                qrTimeout: 120000, // Extended QR timeout
-                connectCooldownMs: 5000, // Longer cooldown
+                qrTimeout: 180000, // Railway extended QR timeout
+                connectCooldownMs: 8000, // Railway longer cooldown
                 userDevicesCache: new Map(),
                 transactionOpts: {
                     maxCommitRetries: 5, // More retries
@@ -135,12 +144,12 @@ class UserWhatsAppSession {
                 }
                 
                 // Generate pairing code if it's a new login
-                if (isNewLogin && !this.pairingCode) {
+                if (isNewLogin && !this.pairingCode && this.phoneNumber) {
                     try {
-                        const code = await this.sock.requestPairingCode('5561');  // Brazilian code prefix
+                        const code = await this.sock.requestPairingCode(this.phoneNumber);
                         this.pairingCode = code;
                         this.connectionState = 'pairing_code_generated';
-                        console.log(`🔐 Pairing Code gerado para usuário ${this.userId}: ${code}`);
+                        console.log(`🔐 Pairing Code gerado para usuário ${this.userId} (${this.phoneNumber}): ${code}`);
                     } catch (error) {
                         console.log(`⚠️ Could not generate pairing code for user ${this.userId}:`, error.message);
                     }
@@ -834,6 +843,8 @@ app.post('/pairing-code/:userId', async (req, res) => {
         }
         
         const session = getUserSession(userId);
+        // Set phone number in session for pairing code generation
+        session.phoneNumber = phoneNumber;
         const result = await session.requestPairingCode(phoneNumber);
         
         res.json(result);

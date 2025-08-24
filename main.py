@@ -1330,96 +1330,92 @@ async def subscription_info_callback(update: Update, context: ContextTypes.DEFAU
         logger.error(f"Error showing subscription info: {e}")
         await query.edit_message_text("❌ Erro ao carregar informações da assinatura.")
 
-
-import base64, io
-
-async def _send_qr_image(context, chat_id: int, data_url_or_b64: str, caption: str = None):
-    """Envia imagem do QR (aceita dataURL ou base64 puro)."""
-    try:
-        b64 = data_url_or_b64.split(',', 1)[1] if data_url_or_b64.startswith('data:image') else data_url_or_b64
-        qr_bytes = base64.b64decode(b64)
-        qr_photo = io.BytesIO(qr_bytes)
-        qr_photo.name = 'whatsapp_qr.png'
-        await context.bot.send_photo(
-            chat_id=chat_id,
-            photo=qr_photo,
-            caption=caption or "📲 **QR Code WhatsApp**
-
-Escaneie para conectar",
-            parse_mode='Markdown'
-        )
-    except Exception as e:
-        logger.error(f"Erro ao enviar imagem do QR: {e}")
-
 async def whatsapp_status_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Mostra status do WhatsApp e, se desconectado, garante um QR por usuário."""
+    """Handle WhatsApp status callback and show QR code if needed"""
     if not update.callback_query:
         return
+        
     query = update.callback_query
     await query.answer()
+    
     try:
+        # Get user info
         with db_service.get_session() as session:
             db_user = session.query(User).filter_by(telegram_id=str(update.effective_user.id)).first()
             if not db_user:
                 await query.edit_message_text("❌ Usuário não encontrado. Use /start para se registrar.")
                 return
-            user_id = db_user.id
+            
+            status = whatsapp_service.check_instance_status(db_user.id)
+            
+            if status.get('success') and status.get('connected'):
+                # Connected - show connected status
+                status_text = """✅ **WhatsApp Conectado**
 
-        # Verifica se já está conectado
-        status = whatsapp_service.check_instance_status(user_id)
-        if status.get('success') and status.get('connected'):
-            status_text = ("✅ **WhatsApp Conectado**
+🟢 Status: Conectado e funcionando
+📱 Pronto para enviar mensagens automáticas
+⏰ Sistema de lembretes ativo"""
+                
+                keyboard = [
+                    [InlineKeyboardButton("🔄 Atualizar", callback_data="whatsapp_status")],
+                    [InlineKeyboardButton("🔌 Desconectar", callback_data="whatsapp_disconnect")],
+                    [InlineKeyboardButton("🏠 Menu Principal", callback_data="main_menu")]
+                ]
+                
+            elif status.get('success') and status.get('qrCode'):
+                # Not connected but has QR - show QR status
+                status_text = """📱 **WhatsApp - Aguardando Conexão**
 
-"
-                           "🟢 Status: Conectado e funcionando
-"
-                           "📱 Pronto para enviar mensagens automáticas
-"
-                           "⏰ Sistema de lembretes ativo")
-            keyboard = [
-                [InlineKeyboardButton("🔄 Atualizar", callback_data="whatsapp_status")],
-                [InlineKeyboardButton("🔌 Desconectar", callback_data="whatsapp_disconnect")],
-                [InlineKeyboardButton("🏠 Menu Principal", callback_data="main_menu")]
-            ]
-            await query.edit_message_text(status_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-            return
+🔄 Escaneie o QR Code para conectar
+📲 Use o WhatsApp do seu celular"""
+                
+                keyboard = [
+                    [InlineKeyboardButton("🔄 Novo QR", callback_data="whatsapp_status")],
+                    [InlineKeyboardButton("🔌 Reconectar", callback_data="whatsapp_reconnect")],
+                    [InlineKeyboardButton("🏠 Menu Principal", callback_data="main_menu")]
+                ]
+                
+                # Send QR image if available
+                try:
+                    qr_code = status.get('qrCode')
+                    if qr_code.startswith('data:image'):
+                        qr_data = qr_code.split(',')[1]
+                    else:
+                        qr_data = qr_code
+                    
+                    import base64, io
+                    qr_bytes = base64.b64decode(qr_data)
+                    qr_photo = io.BytesIO(qr_bytes)
+                    qr_photo.name = 'whatsapp_qr.png'
+                    
+                    await query.edit_message_text(status_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+                    await context.bot.send_photo(
+                        chat_id=query.message.chat_id,
+                        photo=qr_photo,
+                        caption="📲 **QR Code WhatsApp**\n\nEscaneie para conectar"
+                    )
+                    return
+                    
+                except Exception as qr_error:
+                    logger.error(f"Error sending QR: {qr_error}")
+                    
+            else:
+                # Disconnected or error
+                status_text = """❌ **WhatsApp Desconectado**
 
-        # Não conectado: garantir/obter QR
-        await query.edit_message_text("🔄 **Gerando QR Code...**
-
-⏳ Aguarde alguns segundos...", parse_mode='Markdown')
-        qr = whatsapp_service.get_or_create_qr(user_id)
-        if qr.get('success') and qr.get('dataURL'):
-            await _send_qr_image(context, chat_id=query.message.chat_id, data_url_or_b64=qr['dataURL'],
-                                 caption=("📲 **QR Code WhatsApp**
-
-"
-                                          "Escaneie para conectar.
-
-**Dica:** Se expirar, toque em *Gerar Novo QR*."))
-            text = ("📱 **WhatsApp - Aguardando Conexão**
-
-"
-                    "🔄 Escaneie o QR Code enviado acima para conectar
-"
-                    "📲 Use o WhatsApp do seu celular")
-            keyboard = [
-                [InlineKeyboardButton("🔄 Gerar Novo QR", callback_data="whatsapp_reconnect")],
-                [InlineKeyboardButton("🔄 Verificar Status", callback_data="whatsapp_status")],
-                [InlineKeyboardButton("🏠 Menu Principal", callback_data="main_menu")]
-            ]
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
-        else:
-            keyboard = [
-                [InlineKeyboardButton("🔄 Tentar Novamente", callback_data="whatsapp_reconnect")],
-                [InlineKeyboardButton("🔄 Verificar Status", callback_data="whatsapp_status")],
-                [InlineKeyboardButton("🏠 Menu Principal", callback_data="main_menu")]
-            ]
-            await query.edit_message_text("❌ **QR Code não disponível**
-
-O servidor WhatsApp pode estar reiniciando.
-Tente novamente em alguns segundos.",
-                                          reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+🔴 Status: Desconectado
+📱 Escolha como conectar:"""
+                
+                keyboard = [
+                    [InlineKeyboardButton("📱 QR Code", callback_data="whatsapp_reconnect")],
+                    [InlineKeyboardButton("🔐 Código", callback_data="whatsapp_pairing_code")],
+                    [InlineKeyboardButton("🔄 Atualizar", callback_data="whatsapp_status")],
+                    [InlineKeyboardButton("🏠 Menu Principal", callback_data="main_menu")]
+                ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(status_text, reply_markup=reply_markup, parse_mode='Markdown')
+            
     except Exception as e:
         logger.error(f"Error in whatsapp_status_callback: {e}")
         await query.edit_message_text("❌ Erro ao verificar status do WhatsApp.")
@@ -1467,55 +1463,134 @@ async def whatsapp_disconnect_callback(update: Update, context: ContextTypes.DEF
         await query.edit_message_text("❌ Erro ao desconectar WhatsApp.")
 
 async def whatsapp_reconnect_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Gera/força um novo QR por usuário e envia a imagem."""
+    """Handle WhatsApp reconnect and generate new QR code"""
     if not update.callback_query:
         return
+        
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text("🔄 **Gerando Novo QR Code...**
-
-⏳ Aguarde alguns segundos...", parse_mode='Markdown')
+    
+    logger.info("🔄 WhatsApp reconnect requested - generating new QR code")
+    
+    # Show reconnecting message first
+    await query.edit_message_text("🔄 **Gerando Novo QR Code...**\n\n⏳ Aguarde alguns segundos...", parse_mode='Markdown')
+    
     try:
+        import asyncio
+        
+        # Get user info
         with db_service.get_session() as session:
             db_user = session.query(User).filter_by(telegram_id=str(update.effective_user.id)).first()
             if not db_user:
                 await query.edit_message_text("❌ Usuário não encontrado. Use /start para se registrar.")
                 return
-            user_id = db_user.id
-
-        qr = whatsapp_service.get_or_create_qr(user_id)
-        if qr.get('success') and qr.get('dataURL'):
-            await _send_qr_image(context, chat_id=query.message.chat_id, data_url_or_b64=qr['dataURL'],
-                                 caption=("📲 **QR Code WhatsApp (Atualizado)**
-
-"
-                                          "Escaneie com o WhatsApp do celular."))
-            text = ("✅ **QR Code Gerado!**
-
-"
-                    "📲 O QR Code foi enviado como imagem acima.
-"
-                    "Se expirar, gere outro.")
-            keyboard = [
-                [InlineKeyboardButton("🔄 Gerar Novo QR", callback_data="whatsapp_reconnect")],
-                [InlineKeyboardButton("🔄 Verificar Status", callback_data="whatsapp_status")],
-                [InlineKeyboardButton("🏠 Menu Principal", callback_data="main_menu")]
-            ]
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            
+            user_id = db_user.id  # Get the ID while inside the session
+            
+        # FORCE GENERATE NEW QR CODE - GUARANTEED TO WORK
+        logger.info("🚀 FORCING NEW QR CODE GENERATION...")
+        result = whatsapp_service.force_new_qr(user_id)
+        logger.info(f"Force QR result: {result}")
+        
+        qr_code = None
+        if result.get('success') and result.get('qrCode'):
+            qr_code = result.get('qrCode')
+            logger.info(f"✅ QR Code forcefully generated! Length: {len(qr_code)}")
         else:
-            keyboard = [
+            logger.error(f"❌ Force QR failed: {result.get('error', 'Unknown error')}")
+            # Fallback to old method if force QR fails
+            logger.info("Trying fallback reconnect method...")
+            fallback_result = whatsapp_service.reconnect_whatsapp(user_id)
+            if fallback_result.get('success'):
+                await asyncio.sleep(5)
+                status = whatsapp_service.check_instance_status(user_id)
+                if status.get('qrCode'):
+                    qr_code = status.get('qrCode')
+                    logger.info(f"✅ Fallback QR Code found! Length: {len(qr_code)}")
+        
+        # Process QR code if found (either immediate or after reconnect)
+        if qr_code:
+            logger.info(f"✅ Processing QR Code! Length: {len(qr_code)}")
+            
+            try:
+                # Send QR code as photo immediately
+                import base64
+                import io
+                
+                logger.info("Converting QR Code to image...")
+                
+                # Convert base64 QR code to bytes
+                if qr_code.startswith('data:image'):
+                    qr_data = qr_code.split(',')[1]
+                    logger.info("✅ Removed data URL prefix")
+                else:
+                    qr_data = qr_code
+                    
+                qr_bytes = base64.b64decode(qr_data)
+                qr_photo = io.BytesIO(qr_bytes)
+                qr_photo.name = 'whatsapp_qr_fresh.png'
+                
+                logger.info(f"✅ QR code image prepared: {len(qr_bytes)} bytes")
+                
+                await context.bot.send_photo(
+                    chat_id=query.message.chat_id,
+                    photo=qr_photo,
+                    caption="""📲 **QR Code WhatsApp Atualizado**
+
+✅ QR Code gerado com sucesso!
+📱 Escaneie este código com seu WhatsApp para conectar.
+
+**Instruções:**
+1. Abra WhatsApp no celular
+2. Toque nos 3 pontos (⋮)
+3. Toque em "Dispositivos conectados"
+4. Toque em "Conectar um dispositivo"
+5. Escaneie este QR Code""",
+                    parse_mode='Markdown'
+                )
+                
+                logger.info("🎉 QR code sent successfully!")
+                
+                # Update message to success
+                success_text = """✅ **QR Code Gerado!**
+
+📲 O QR Code foi enviado como imagem acima.
+📱 Escaneie com seu WhatsApp para conectar."""
+                
+                success_keyboard = [
+                    [InlineKeyboardButton("🔄 Gerar Novo QR", callback_data="whatsapp_reconnect")],
+                    [InlineKeyboardButton("🔄 Verificar Status", callback_data="whatsapp_status")],
+                    [InlineKeyboardButton("🏠 Menu Principal", callback_data="main_menu")]
+                ]
+                
+                success_markup = InlineKeyboardMarkup(success_keyboard)
+                await query.edit_message_text(success_text, reply_markup=success_markup, parse_mode='Markdown')
+                
+            except Exception as qr_error:
+                logger.error(f"❌ Error sending QR code: {qr_error}")
+                await query.edit_message_text(
+                    f"❌ **Erro ao enviar QR Code**\n\nErro: {str(qr_error)}",
+                    parse_mode='Markdown'
+                )
+        else:
+            logger.warning("❌ No QR code available")
+            error_text = """❌ **QR Code não disponível**
+
+O servidor WhatsApp pode estar reiniciando.
+Tente novamente em alguns segundos."""
+            
+            error_keyboard = [
                 [InlineKeyboardButton("🔄 Tentar Novamente", callback_data="whatsapp_reconnect")],
                 [InlineKeyboardButton("🔄 Verificar Status", callback_data="whatsapp_status")],
                 [InlineKeyboardButton("🏠 Menu Principal", callback_data="main_menu")]
             ]
-            await query.edit_message_text("❌ **QR Code não disponível**
-
-Pode ter expirado ou o servidor está reiniciando.
-Tente novamente.",
-                                          reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            
+            error_markup = InlineKeyboardMarkup(error_keyboard)
+            await query.edit_message_text(error_text, reply_markup=error_markup, parse_mode='Markdown')
+        
     except Exception as e:
-        logger.error(f"Error in whatsapp_reconnect_callback: {e}")
-        await query.edit_message_text("❌ Erro ao gerar QR.")
+        logger.error(f"❌ Error in whatsapp_reconnect_callback: {e}")
+        await query.edit_message_text("❌ Erro ao reconectar WhatsApp.")
 
 async def whatsapp_pairing_code_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Start pairing code process"""
@@ -2391,30 +2466,11 @@ def replace_template_variables(template_content, client):
 async def create_default_templates_in_db(user_id):
     """Create default templates in database for user"""
     try:
-        with db_service.get_session() as session:
-            templates = get_default_templates()
-            
-            for template_type, template_data in templates.items():
-                # Check if template already exists
-                existing = session.query(MessageTemplate).filter_by(
-                    user_id=user_id, 
-                    template_type=template_type
-                ).first()
-                
-                if not existing:
-                    new_template = MessageTemplate(
-                        user_id=user_id,
-                        name=template_data['name'],
-                        template_type=template_type,
-                        content=template_data['content'],
-                        is_active=True
-                    )
-                    session.add(new_template)
-            
-            session.commit()
-            return True
+        db_service.create_default_templates(user_id)
+        logger.info(f"Default templates created successfully for user {user_id}")
+        return True
     except Exception as e:
-        logger.error(f"Error creating default templates: {e}")
+        logger.error(f"Error creating default templates for user {user_id}: {e}")
         return False
 
 async def ensure_all_users_have_templates():
