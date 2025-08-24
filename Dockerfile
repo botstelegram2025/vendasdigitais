@@ -8,7 +8,7 @@ RUN npm ci --only=production
 
 # Copy WhatsApp service files
 COPY whatsapp_baileys_multi.js ./
-COPY sessions/ ./sessions/
+RUN mkdir -p ./sessions/
 
 # Main Python application stage
 FROM python:3.11-slim AS main
@@ -36,8 +36,16 @@ RUN groupadd --gid 1001 app && \
 WORKDIR /app
 
 # Copy Python requirements and install dependencies
-COPY pyproject.toml ./
-RUN pip install --no-cache-dir -e .
+# Try pyproject.toml first, then fallback to requirements.txt
+COPY pyproject.toml* requirements.txt* ./
+RUN if [ -f "pyproject.toml" ]; then \
+        pip install --no-cache-dir -e .; \
+    elif [ -f "requirements.txt" ]; then \
+        pip install --no-cache-dir -r requirements.txt; \
+    else \
+        echo "ERROR: Neither pyproject.toml nor requirements.txt found!"; \
+        exit 1; \
+    fi
 
 # Copy application code
 COPY --chown=app:app . .
