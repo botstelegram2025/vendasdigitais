@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "🚀 Starting Railway Deployment (monolito)..."
 
-# 🔧 Configuração do Baileys (sempre porta fixa interna 3001)
+# Configuração Baileys
 export BAILEYS_PORT=3001
 export RAILWAY_ENVIRONMENT_NAME=${RAILWAY_ENVIRONMENT_NAME:-production}
 
@@ -11,7 +11,7 @@ echo "📱 Starting WhatsApp (Baileys) on :$BAILEYS_PORT..."
 node whatsapp_baileys_multi.js > /app/logs/baileys.out 2>&1 &
 WHATSAPP_PID=$!
 
-# 🔍 Aguarda Baileys subir
+# Aguarda Baileys responder
 for i in {1..40}; do
   if curl -fsS http://127.0.0.1:$BAILEYS_PORT/status >/dev/null 2>&1; then
     echo "✅ Baileys is up"
@@ -25,18 +25,17 @@ for i in {1..40}; do
   fi
 done
 
-# 🌐 URL interna para o bot Python conversar com Baileys
+# URL fixa do Baileys para o serviço Python
 export WHATSAPP_URL="http://127.0.0.1:$BAILEYS_PORT"
 export BAILEYS_API_URL="$WHATSAPP_URL"
 echo "[BOOT] WHATSAPP_URL=$WHATSAPP_URL"
 
-# 🤖 Inicia o bot Telegram (Railway injeta $PORT automaticamente)
+# Inicia o bot Telegram
 echo "🤖 Starting Telegram bot..."
 if [ -z "${PORT:-}" ]; then export PORT=5000; fi
 python3 main.py > /app/logs/bot.out 2>&1 &
 BOT_PID=$!
 
-# 🛑 Função de encerramento
 cleanup() {
   echo "🛑 Shutting down..."
   kill $BOT_PID $WHATSAPP_PID 2>/dev/null || true
@@ -45,7 +44,7 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT
 
-# 🔄 Mantém container vivo - reinicia se um dos processos morrer
+# Se um dos dois morrer → encerra o container
 while true; do
   if ! kill -0 "$BOT_PID" 2>/dev/null; then
     echo "❌ Bot died"
