@@ -1,0 +1,29 @@
+# Patches aplicados
+
+[
+  [
+    "whatsapp_baileys_multi.js",
+    "/mnt/data/project_patched/whatsapp_baileys_multi.js",
+    "overwritten"
+  ],
+  [
+    "services/whatsapp_service.py",
+    "/mnt/data/project_patched/services/whatsapp_service.py",
+    "patched"
+  ],
+  [
+    "launch_railway_final.py",
+    "/mnt/data/project_patched/launch_railway_final.py",
+    "patched"
+  ],
+  [
+    "railway.toml",
+    "/mnt/data/project_patched/railway.toml",
+    "patched"
+  ],
+  [
+    "nixpacks.toml",
+    "/mnt/data/project_patched/nixpacks.toml",
+    "patched->launch_railway_final.py"
+  ]
+]

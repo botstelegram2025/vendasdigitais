@@ -1,5 +1,7 @@
 import requests
 import logging
+BAILEYS_API_URL = os.getenv("WHATSAPP_URL") or os.getenv("BAILEYS_API_URL") or "http://127.0.0.1:3001"
+print(f"[BOOT] BAILEYS_API_URL = {BAILEYS_API_URL}")
 from typing import Dict, Any
 
 logger = logging.getLogger(__name__)

@@ -1,23 +1,19 @@
 {
-  "name": "telegram-whatsapp-bot",
+  "name": "workspace",
   "version": "1.0.0",
-  "description": "Telegram bot with WhatsApp integration",
-  "main": "whatsapp_baileys_multi.js",
-  "engines": {
-    "node": "18.x",
-    "npm": "9.x"
-  },
+  "main": "whatsapp_baileys.js",
   "scripts": {
-    "start": "node whatsapp_baileys_multi.js",
-    "postinstall": "echo 'Dependencies installed successfully'"
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
   "dependencies": {
-    "@hapi/boom": "10.0.1",
-    "@whiskeysockets/baileys": "6.7.8", 
-    "cors": "2.8.5",
-    "express": "4.18.2",
-    "qrcode": "1.5.3"
-  },
-  "keywords": ["telegram", "whatsapp", "bot"],
-  "license": "MIT"
+    "@hapi/boom": "^10.0.1",
+    "@whiskeysockets/baileys": "^6.7.18",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "qrcode": "^1.5.4"
+  }
 }
