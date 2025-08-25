@@ -1,152 +1,101 @@
 #!/usr/bin/env python3
 """
-Script de inicialização para Railway
-Roda WhatsApp Baileys em background e depois o bot Telegram
+Railway Start Script - Telegram Bot + WhatsApp Multi-User
+Optimized for production deployment
 """
+
 import os
 import sys
-import threading
-import subprocess
 import time
 import signal
-import logging
-import requests
+import subprocess
+import threading
+from pathlib import Path
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - Railway - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger('railway_starter')
+# Environment setup
+os.environ.setdefault('PYTHONPATH', '/app')
+os.environ.setdefault('NODE_ENV', 'production')
 
-class RailwayStarter:
-    def __init__(self):
-        self.whatsapp_process = None
-        self.running = True
+def start_whatsapp_service():
+    """Start WhatsApp Baileys Multi-User service"""
+    try:
+        print("🚀 Starting WhatsApp Baileys Multi-User service...")
         
-    def start_whatsapp_background(self):
-        """Start WhatsApp Baileys server in background"""
-        try:
-            logger.info("🚀 Starting WhatsApp Baileys server in background...")
-            cmd = ["node", "whatsapp_baileys_multi.js"]
+        # Ensure sessions directory exists
+        sessions_dir = Path('./sessions')
+        sessions_dir.mkdir(exist_ok=True)
+        
+        # Start WhatsApp service
+        process = subprocess.Popen(
+            ['node', 'whatsapp_baileys_multi.js'],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            universal_newlines=True,
+            bufsize=1
+        )
+        
+        # Forward output
+        for line in iter(process.stdout.readline, ''):
+            print(f"[WhatsApp] {line.strip()}")
             
-            env = os.environ.copy()
-            env['NODE_ENV'] = 'production'
-            env['PORT'] = str(os.getenv('WHATSAPP_PORT', 3001))
-            
-            self.whatsapp_process = subprocess.Popen(
-                cmd,
-                env=env,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                universal_newlines=True,
-                bufsize=1
-            )
-            
-            # Log WhatsApp output in separate thread
-            def log_whatsapp():
-                try:
-                    if self.whatsapp_process and self.whatsapp_process.stdout:
-                        for line in self.whatsapp_process.stdout:
-                            logger.info(f"[WhatsApp] {line.strip()}")
-                except Exception as e:
-                    logger.error(f"Error logging WhatsApp output: {e}")
-                    
-            threading.Thread(target=log_whatsapp, daemon=True).start()
-            logger.info("✅ WhatsApp Baileys started in background")
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to start WhatsApp server: {e}")
-            return False
+        return process
+        
+    except Exception as e:
+        print(f"❌ Error starting WhatsApp service: {e}")
+        return None
+
+def start_telegram_bot():
+    """Start Telegram Bot service"""
+    try:
+        print("🤖 Starting Telegram Bot service...")
+        
+        # Import and run the bot
+        import main
+        
+    except Exception as e:
+        print(f"❌ Error starting Telegram Bot: {e}")
+        sys.exit(1)
+
+def signal_handler(signum, frame):
+    """Handle graceful shutdown"""
+    print("🛑 Received shutdown signal, cleaning up...")
+    sys.exit(0)
+
+def main():
+    """Main entry point for Railway deployment"""
     
-    def wait_whatsapp_ready(self):
-        """Wait for WhatsApp server to be ready"""
-        logger.info("⏳ Waiting for WhatsApp server to be ready...")
-        whatsapp_url = os.getenv('WHATSAPP_URL', 'http://127.0.0.1:3001')
-        
-        for attempt in range(30):  # 30 tentativas = 30 segundos
-            try:
-                response = requests.get(f"{whatsapp_url}/health", timeout=2)
-                if response.status_code == 200:
-                    logger.info("✅ WhatsApp server is ready!")
-                    return True
-            except:
-                pass
-            
-            time.sleep(1)
-            logger.info(f"⏳ Attempt {attempt + 1}/30 - WhatsApp not ready yet...")
-        
-        logger.warning("⚠️ WhatsApp server not responding, continuing anyway...")
-        return False
-        
-    def start_telegram_bot(self):
-        """Start Telegram bot directly (not subprocess)"""
-        try:
-            logger.info("🤖 Starting Telegram bot...")
-            
-            # Import and run main bot
-            import sys
-            sys.path.insert(0, '.')  # Ensure current directory is in path
-            import main
-            logger.info("✅ Telegram bot started!")
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to start Telegram bot: {e}")
-            raise
+    # Register signal handlers
+    signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
     
-    def handle_signal(self, signum, frame):
-        """Handle shutdown signals"""
-        logger.info(f"📴 Received signal {signum}, shutting down...")
-        self.running = False
-        self.shutdown()
-        
-    def shutdown(self):
-        """Gracefully shutdown all processes"""
-        logger.info("🛑 Shutting down services...")
-        
-        if self.whatsapp_process:
-            try:
-                logger.info("⏹️ Stopping WhatsApp...")
-                self.whatsapp_process.terminate()
-                self.whatsapp_process.wait(timeout=10)
-                logger.info("✅ WhatsApp stopped")
-            except subprocess.TimeoutExpired:
-                logger.warning("⚠️ Force killing WhatsApp...")
-                self.whatsapp_process.kill()
-            except Exception as e:
-                logger.error(f"❌ Error stopping WhatsApp: {e}")
-        
-        sys.exit(0)
+    print("🚀 Starting Railway Deployment - Telegram Bot + WhatsApp")
+    print("=" * 60)
     
-    def run(self):
-        """Main execution method"""
-        logger.info("🌟 Starting Railway deployment...")
-        
-        # Setup signal handlers
-        signal.signal(signal.SIGTERM, self.handle_signal)
-        signal.signal(signal.SIGINT, self.handle_signal)
-        
-        try:
-            # 1. Start WhatsApp in background
-            if not self.start_whatsapp_background():
-                logger.error("❌ Failed to start WhatsApp server")
-                return
-            
-            # 2. Wait for WhatsApp to be ready
-            self.wait_whatsapp_ready()
-            
-            # 3. Start Telegram bot (blocking)
-            self.start_telegram_bot()
-            
-        except KeyboardInterrupt:
-            logger.info("📴 Received keyboard interrupt")
-            self.shutdown()
-        except Exception as e:
-            logger.error(f"❌ Startup error: {e}")
-            self.shutdown()
+    # Check required environment variables
+    required_vars = [
+        'TELEGRAM_BOT_TOKEN',
+        'DATABASE_URL',
+        'MERCADO_PAGO_ACCESS_TOKEN'
+    ]
+    
+    missing_vars = []
+    for var in required_vars:
+        if not os.getenv(var):
+            missing_vars.append(var)
+    
+    if missing_vars:
+        print(f"❌ Missing required environment variables: {', '.join(missing_vars)}")
+        sys.exit(1)
+    
+    # Start WhatsApp service in background thread
+    whatsapp_thread = threading.Thread(target=start_whatsapp_service, daemon=True)
+    whatsapp_thread.start()
+    
+    # Give WhatsApp service time to start
+    time.sleep(3)
+    
+    # Start Telegram bot (main process)
+    start_telegram_bot()
 
 if __name__ == "__main__":
-    starter = RailwayStarter()
-    starter.run()
+    main()
