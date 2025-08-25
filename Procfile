@@ -1,2 +1,1 @@
-web: python main.py
-whatsapp: node whatsapp_baileys_multi.js
+web: python launch_unified.py

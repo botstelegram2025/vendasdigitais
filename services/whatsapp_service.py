@@ -8,11 +8,14 @@ class WhatsAppService:
     def __init__(self):
         # Support Railway environment with internal service communication
         import os
-        railway_internal_url = os.getenv('RAILWAY_STATIC_URL')
-        if railway_internal_url:
-            self.baileys_url = f"https://{railway_internal_url}"
-        else:
-            self.baileys_url = "http://localhost:3001"
+        # Prioridade: WHATSAPP_URL > RAILWAY_STATIC_URL > default interno
+        self.baileys_url = os.getenv('WHATSAPP_URL')
+        if not self.baileys_url:
+            railway_internal_url = os.getenv('RAILWAY_STATIC_URL')
+            if railway_internal_url:
+                self.baileys_url = f"https://{railway_internal_url}"
+            else:
+                self.baileys_url = "http://127.0.0.1:3001"
         
         self.headers = {
             'Content-Type': 'application/json'

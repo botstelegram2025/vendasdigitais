@@ -16,12 +16,8 @@ else:
 
 # WhatsApp Service Configuration
 WHATSAPP_PORT = int(os.getenv('WHATSAPP_PORT', 3001))
-if RAILWAY_ENV:
-    # Railway generates internal URLs
-    WHATSAPP_HOST = os.getenv('RAILWAY_PRIVATE_DOMAIN', f'localhost:{WHATSAPP_PORT}')
-    WHATSAPP_URL = f"http://{WHATSAPP_HOST}"
-else:
-    WHATSAPP_URL = f"http://localhost:{WHATSAPP_PORT}"
+# No Railway usamos 127.0.0.1 para comunicação interna
+WHATSAPP_URL = os.getenv('WHATSAPP_URL', f"http://127.0.0.1:{WHATSAPP_PORT}")
 
 # Telegram Bot Configuration
 BOT_TOKEN = os.getenv('BOT_TOKEN', '')

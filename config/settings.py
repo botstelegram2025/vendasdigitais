@@ -46,7 +46,7 @@ class TelegramConfig:
 @dataclass
 class WhatsAppConfig:
     """WhatsApp service configuration"""
-    service_url: str = field(default_factory=lambda: os.getenv("WHATSAPP_SERVICE_URL", "http://localhost:3001"))
+    service_url: str = field(default_factory=lambda: os.getenv("WHATSAPP_URL", os.getenv("WHATSAPP_SERVICE_URL", "http://127.0.0.1:3001")))
     timeout: int = field(default_factory=lambda: int(os.getenv("WHATSAPP_TIMEOUT", "30")))
     max_retries: int = field(default_factory=lambda: int(os.getenv("WHATSAPP_MAX_RETRIES", "3")))
     backoff_factor: float = field(default_factory=lambda: float(os.getenv("WHATSAPP_BACKOFF_FACTOR", "1.5")))

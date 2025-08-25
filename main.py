@@ -1,3 +1,10 @@
+# Configure runtime for Railway deployment
+try:
+    import runtime_config
+    runtime_config.configure_for_railway()
+except ImportError:
+    pass
+
 import logging
 import os
 import asyncio
