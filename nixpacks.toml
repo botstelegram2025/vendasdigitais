@@ -1,18 +1,18 @@
 [variables]
 NIXPACKS_PYTHON_VERSION = "3.11"
-NIXPACKS_NODE_VERSION = "20"
+NIXPACKS_NODE_VERSION = "18"
 
 [phases.setup]
-dependsOn = ["install"]
+nixPkgs = ['python311', 'nodejs_18', 'npm']
 
 [phases.install]
 cmds = [
-    "apt-get update && apt-get install -y curl",
     "pip install -r requirements.txt",
-    "npm install"
+    "npm install --no-package-lock --production --no-optional"
 ]
 
 [phases.build]
-cmds = ["echo 'Build completed'"]
+cmds = ["echo 'Build completed successfully'"]
+
 [start]
 cmd = "python launch_railway_final.py"

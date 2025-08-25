@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-🚀 Railway Launch DEFINITIVO - Solução robusta e testada
-Garante que WhatsApp e base de dados funcionem 100%
+🚀 Railway Launch DEFINITIVO - Portas unificadas
+Resolve conflito de portas entre WhatsApp e Telegram bot
 """
 import os
 import sys
@@ -16,20 +16,32 @@ from pathlib import Path
 # Logging configurado para Railway
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - RAILWAY-FINAL - %(levelname)s - %(message)s'
+    format='%(asctime)s - RAILWAY-UNIFIED - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger('railway_final')
+logger = logging.getLogger('railway_unified')
 
-# Global process references for cleanup
+# Global process references
 whatsapp_process = None
-telegram_process = None
+
+def get_unified_port():
+    """Get unified port for both WhatsApp and internal communication"""
+    railway_port = os.getenv('PORT', '8080')  # Railway dynamic port
+    is_railway = os.getenv('RAILWAY_ENVIRONMENT_NAME') is not None
+    
+    if is_railway:
+        port = railway_port
+        logger.info(f"🚂 Railway mode: Using port {port}")
+    else:
+        port = '3001'  # Local development
+        logger.info(f"💻 Local mode: Using port {port}")
+    
+    return port
 
 def force_database_migration():
     """Force database migration with robust error handling"""
     try:
         logger.info("🗄️ FORCING database migration...")
         
-        # Direct SQL approach for Railway PostgreSQL
         database_url = os.getenv('DATABASE_URL')
         if not database_url:
             logger.error("❌ DATABASE_URL not found")
@@ -39,15 +51,12 @@ def force_database_migration():
         if database_url.startswith('postgres://'):
             database_url = database_url.replace('postgres://', 'postgresql://', 1)
         
-        # Import SQLAlchemy directly
         from sqlalchemy import create_engine, text
         
-        logger.info("🔗 Connecting to Railway database...")
+        logger.info("🔗 Connecting to database...")
         engine = create_engine(database_url, pool_pre_ping=True)
         
-        # Execute migration SQL directly
         with engine.connect() as conn:
-            # Add is_default column if not exists
             try:
                 logger.info("📝 Adding is_default column...")
                 conn.execute(text("""
@@ -80,34 +89,31 @@ def force_database_migration():
         return False
 
 def start_whatsapp_service():
-    """Start WhatsApp service with proper Railway configuration"""
+    """Start WhatsApp service with unified port configuration"""
     global whatsapp_process
     
     try:
-        logger.info("🚀 Starting WhatsApp service...")
+        unified_port = get_unified_port()
+        logger.info(f"🚀 Starting WhatsApp on unified port: {unified_port}")
         
         # Check if node_modules exists
         if not Path("node_modules").exists():
             logger.info("📦 Installing Node.js dependencies...")
-            result = subprocess.run(['npm', 'install'], capture_output=True, text=True, timeout=180)
+            result = subprocess.run(['npm', 'install', '--no-package-lock'], 
+                                  capture_output=True, text=True, timeout=180)
             if result.returncode != 0:
                 logger.error(f"❌ npm install failed: {result.stderr}")
                 return None
         
-        # Railway environment variables
+        # Environment for WhatsApp with UNIFIED port
         env = os.environ.copy()
-        railway_port = os.getenv('PORT', '8080')
-        
-        # Set WhatsApp configuration
         env.update({
-        'BAILEYS_PORT': railway_port,
             'NODE_ENV': 'production',
-            'PORT': railway_port,
-            'RAILWAY_ENVIRONMENT_NAME': 'production',
-            'WHATSAPP_INTERNAL_PORT': '3001'
+            'PORT': unified_port,  # UNIFIED PORT
+            'RAILWAY_ENVIRONMENT_NAME': env.get('RAILWAY_ENVIRONMENT_NAME', 'local')
         })
         
-        logger.info(f"🌐 Starting WhatsApp on Railway port: {railway_port}")
+        logger.info(f"🌐 WhatsApp will bind to: 0.0.0.0:{unified_port}")
         
         # Start WhatsApp process
         whatsapp_process = subprocess.Popen(
@@ -119,14 +125,13 @@ def start_whatsapp_service():
             bufsize=1
         )
         
-        # Monitor output in background
+        # Monitor output
         def log_whatsapp_output():
             try:
                 for line in whatsapp_process.stdout:
                     if line.strip():
                         logger.info(f"[WhatsApp] {line.strip()}")
-                        # Check for ready signal
-                        if "Servidor Baileys Multi-User rodando" in line:
+                        if "rodando na porta" in line:
                             logger.info("✅ WhatsApp service is ready!")
             except:
                 pass
@@ -141,18 +146,15 @@ def start_whatsapp_service():
         return None
 
 def wait_for_whatsapp_ready(max_wait=60):
-    """Wait for WhatsApp to be ready with multiple endpoint checks"""
-    logger.info("⏳ Waiting for WhatsApp to be ready...")
+    """Wait for WhatsApp with unified port"""
+    unified_port = get_unified_port()
     
-    # Railway port
-    railway_port = os.getenv('PORT', '8080')
+    logger.info(f"⏳ Waiting for WhatsApp on port {unified_port}...")
     
-    # Multiple URLs to try
+    # Health check URLs with UNIFIED port
     health_urls = [
-        f'http://127.0.0.1:{railway_port}/health',
-        f'http://localhost:{railway_port}/health',
-        'http://127.0.0.1:3001/health',
-        'http://localhost:3001/health'
+        f'http://127.0.0.1:{unified_port}/health',
+        f'http://localhost:{unified_port}/health'
     ]
     
     start_time = time.time()
@@ -162,10 +164,10 @@ def wait_for_whatsapp_ready(max_wait=60):
                 response = requests.get(url, timeout=3)
                 if response.status_code == 200:
                     logger.info(f"✅ WhatsApp ready at {url}")
-                    # Set working URL for telegram bot
-                    base_url = url.replace('/health', '')
-                    os.environ['WHATSAPP_URL'] = base_url
-                    logger.info(f"🔗 WhatsApp URL set to: {base_url}")
+                    # Set UNIFIED URL for telegram bot
+                    whatsapp_url = url.replace('/health', '')
+                    os.environ['WHATSAPP_URL'] = whatsapp_url
+                    logger.info(f"🔗 UNIFIED WhatsApp URL set: {whatsapp_url}")
                     return True
             except:
                 pass
@@ -173,19 +175,26 @@ def wait_for_whatsapp_ready(max_wait=60):
         logger.info(f"⏳ Still waiting... ({int(time.time() - start_time)}s)")
         time.sleep(3)
     
-    logger.warning("⚠️ WhatsApp health check failed, but continuing...")
-    # Set fallback URL
-    os.environ['WHATSAPP_URL'] = f'http://127.0.0.1:{railway_port}'
+    logger.warning("⚠️ WhatsApp health check failed, setting fallback...")
+    # Set fallback UNIFIED URL
+    os.environ['WHATSAPP_URL'] = f'http://127.0.0.1:{unified_port}'
     return False
 
 def start_telegram_bot():
-    """Start Telegram bot"""
+    """Start Telegram bot with unified port configuration"""
     try:
-        logger.info("🤖 Starting Telegram bot...")
+        unified_port = get_unified_port()
+        logger.info(f"🤖 Starting Telegram bot (WhatsApp port: {unified_port})...")
         
-        # Set required environment variables
+        # Set environment for unified communication
         os.environ['PYTHONUNBUFFERED'] = '1'
         os.environ['PYTHONIOENCODING'] = 'utf-8'
+        
+        # Ensure WhatsApp URL is set with unified port
+        if not os.environ.get('WHATSAPP_URL'):
+            os.environ['WHATSAPP_URL'] = f'http://127.0.0.1:{unified_port}'
+            
+        logger.info(f"📡 Telegram will connect to: {os.environ['WHATSAPP_URL']}")
         
         # Add current directory to path
         if '.' not in sys.path:
@@ -205,9 +214,8 @@ def setup_signal_handlers():
     def signal_handler(signum, frame):
         logger.info("🛑 Received shutdown signal, cleaning up...")
         
-        global whatsapp_process, telegram_process
+        global whatsapp_process
         
-        # Cleanup processes
         if whatsapp_process:
             try:
                 whatsapp_process.terminate()
@@ -222,9 +230,14 @@ def setup_signal_handlers():
     signal.signal(signal.SIGTERM, signal_handler)
 
 def main():
-    """Main launcher with robust error handling"""
+    """Main launcher with unified port configuration"""
     try:
-        logger.info("🌟 Railway Final Launcher Starting...")
+        logger.info("🌟 Railway Unified Port Launcher Starting...")
+        
+        # Show port configuration
+        unified_port = get_unified_port()
+        is_railway = os.getenv('RAILWAY_ENVIRONMENT_NAME') is not None
+        logger.info(f"🎯 UNIFIED PORT: {unified_port} (Railway: {is_railway})")
         
         # Setup signal handlers
         setup_signal_handlers()
@@ -233,26 +246,25 @@ def main():
         logger.info("📋 Step 1: Database Migration")
         if not force_database_migration():
             logger.error("❌ CRITICAL: Database migration failed!")
-            logger.error("🔥 This will cause template loading errors!")
             return 1
         
-        # Step 2: Start WhatsApp service
-        logger.info("📋 Step 2: WhatsApp Service")
+        # Step 2: Start WhatsApp service with unified port
+        logger.info("📋 Step 2: WhatsApp Service (Unified Port)")
         whatsapp_proc = start_whatsapp_service()
         if not whatsapp_proc:
-            logger.error("❌ CRITICAL: WhatsApp service failed to start!")
+            logger.error("❌ CRITICAL: WhatsApp service failed!")
             return 1
         
-        # Step 3: Wait for WhatsApp
-        logger.info("📋 Step 3: WhatsApp Health Check")
+        # Step 3: Wait for WhatsApp with unified port
+        logger.info("📋 Step 3: WhatsApp Health Check (Unified Port)")
         wait_for_whatsapp_ready()
         
-        # Step 4: Start Telegram bot
-        logger.info("📋 Step 4: Telegram Bot")
+        # Step 4: Start Telegram bot with unified port
+        logger.info("📋 Step 4: Telegram Bot (Unified Communication)")
         start_telegram_bot()
         
-        logger.info("🎉 ALL SERVICES RUNNING SUCCESSFULLY!")
-        logger.info("🔥 Railway deployment is FULLY FUNCTIONAL!")
+        logger.info("🎉 ALL SERVICES RUNNING WITH UNIFIED PORTS!")
+        logger.info(f"🔥 Railway deployment FULLY FUNCTIONAL on port {unified_port}!")
         
         # Keep main thread alive
         while True:
