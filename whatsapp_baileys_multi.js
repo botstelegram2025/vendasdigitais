@@ -1006,17 +1006,22 @@ process.on('SIGINT', () => {
     });
 });
 
-// Railway port configuration
-const RAILWAY_PORT = process.env.PORT || 8080;        // Main Railway port
-const INTERNAL_PORT = process.env.WHATSAPP_INTERNAL_PORT || 3001;  // Internal WhatsApp port
-const PORT = isRailway ? RAILWAY_PORT : INTERNAL_PORT;
+// Railway port configuration - DEFINITIVE
+const RAILWAY_PORT = parseInt(process.env.PORT) || 8080;
+const PORT = RAILWAY_PORT;  // Always use Railway port
+
+console.log(`🌐 Railway Environment: ${process.env.RAILWAY_ENVIRONMENT_NAME || 'Not Railway'}`);
+console.log(`📡 Binding to port: ${PORT}`);
 
 app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Servidor Baileys Multi-User rodando na porta ${PORT}`);
     console.log(`✅ Sistema de recuperação automática ativo`);
     console.log(`💾 Sessões persistentes em ./sessions/`);
+    console.log(`🌍 Listening on 0.0.0.0:${PORT} for all interfaces`);
+    
     if (isRailway) {
-        console.log(`⚡ Railway mode - listening on all interfaces`);
-        console.log(`🔗 Internal communication port: ${INTERNAL_PORT}`);
+        console.log(`⚡ Railway deployment mode ACTIVE`);
+        console.log(`🔗 External access: Railway domain`);
+        console.log(`🔗 Internal access: 127.0.0.1:${PORT}`);
     }
 });
