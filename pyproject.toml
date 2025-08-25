@@ -15,7 +15,7 @@ keywords = ["telegram", "bot", "client-management", "whatsapp", "automation"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: MIT",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
@@ -79,6 +79,13 @@ Repository = "https://github.com/example/client-management-bot.git"
 
 [project.scripts]
 client-bot = "main:main"
+
+[tool.setuptools]
+packages = ["core", "services", "handlers", "config"]
+include-package-data = true
+
+[tool.setuptools.package-dir]
+"" = "."
 
 [tool.pytest.ini_options]
 minversion = "7.0"
