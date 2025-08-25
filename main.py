@@ -1855,8 +1855,10 @@ async def handle_keyboard_buttons(update: Update, context: ContextTypes.DEFAULT_
         
     text = update.message.text.strip()
     
-    # Check if user is creating a template
-    if context.user_data.get('creating_template'):
+    # Check if user is creating a template (new step-by-step system)
+    creating_step = context.user_data.get('creating_template_step')
+    
+    if creating_step:
         await process_template_creation(update, context, text)
         return
     
@@ -2471,6 +2473,16 @@ async def create_default_templates_in_db(user_id):
         return True
     except Exception as e:
         logger.error(f"Error creating default templates for user {user_id}: {e}")
+        return False
+
+async def restore_default_templates_for_user(user_id):
+    """Restore all default templates to original state"""
+    try:
+        db_service.restore_default_templates(user_id)
+        logger.info(f"Default templates restored for user {user_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error restoring default templates for user {user_id}: {e}")
         return False
 
 async def ensure_all_users_have_templates():
@@ -4265,66 +4277,229 @@ async def send_template_to_client_callback(update: Update, context: ContextTypes
         await query.edit_message_text("❌ Erro ao enviar template.")
 
 async def template_create_new_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle create new template callback"""
+    """Handle create new template callback - Step 1: Ask for name"""
+    
+    if not update.callback_query:
+        logger.error("DEBUG: No callback_query in update")
+        return
+        
+    query = update.callback_query
+    await query.answer()
+    
+    user = query.from_user
+    logger.warning(f"DEBUG: Processing template creation for user {user.id}")
+    
+    try:
+        with db_service.get_session() as session:
+            db_user = session.query(User).filter_by(telegram_id=str(user.id)).first()
+            
+            if not db_user:
+                logger.error(f"DEBUG: User {user.id} not found in database")
+                await query.edit_message_text("❌ Usuário não encontrado.")
+                return
+                
+            if not db_user.is_active:
+                logger.error(f"DEBUG: User {user.id} account inactive")
+                await query.edit_message_text("❌ Conta inativa.")
+                return
+            
+            logger.warning(f"DEBUG: User {user.id} validated, showing step 1")
+            
+            text = """➕ CRIAR NOVO TEMPLATE - Etapa 1/3
+
+📝 Digite o nome do template:
+
+⚠️ Não clique nos botões do menu abaixo - apenas digite o nome!
+
+❌ Digite 'cancelar' para cancelar a criação."""
+            
+            # Edit the inline message without changing keyboard
+            await query.edit_message_text(text)
+            
+            # Initialize template creation state
+            context.user_data['creating_template_step'] = 'name'
+            context.user_data['template_data'] = {}
+            
+            logger.warning(f"DEBUG: Template creation initialized for user {user.id}, step=name")
+            
+    except Exception as e:
+        logger.error(f"CRITICAL ERROR in template_create_new_callback: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
+        try:
+            await query.edit_message_text("❌ Erro ao iniciar criação do template.")
+        except:
+            logger.error("Failed to send error message to user")
+
+async def process_template_creation(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
+    """Process step-by-step template creation"""
+    logger.warning(f"DEBUG: process_template_creation called with text='{text}' for user {update.effective_user.id if update.effective_user else 'Unknown'}")
+    
+    if not update.effective_user:
+        logger.error("DEBUG: No effective_user in update")
+        return
+        
+    user = update.effective_user
+    
+    step = context.user_data.get('creating_template_step')
+    logger.warning(f"DEBUG: Current step='{step}' for user {user.id}")
+    
+    try:
+        # Define botões do teclado persistente que devem ser ignorados
+        keyboard_buttons = [
+            "👥 Clientes", "📊 Dashboard", "📱 WhatsApp", "💳 Assinatura", 
+            "📋 Ver Templates", "⏰ Horários", "➕ Adicionar Cliente", 
+            "❓ Ajuda", "🏠 Menu Principal", "📋 Ver Clientes", "🚀 PAGAMENTO ANTECIPADO"
+        ]
+        
+        # Check if user clicked a keyboard button instead of typing
+        if text in keyboard_buttons:
+            await update.message.reply_text("❌ Por favor, digite o nome do template (não clique nos botões do menu).")
+            return
+        
+        # Check if user wants to cancel
+        if text.lower() == 'cancelar':
+            context.user_data.pop('creating_template_step', None)
+            context.user_data.pop('template_data', None)
+            # Restore main keyboard
+            reply_markup = get_main_keyboard()
+            await update.message.reply_text("❌ Criação de template cancelada.", reply_markup=reply_markup)
+            return
+            
+        step = context.user_data.get('creating_template_step')
+        template_data = context.user_data.get('template_data', {})
+        
+        if step == 'name':
+            # Step 1: Store name and move to type selection
+            name = text.strip()
+            if not name:
+                await update.message.reply_text("❌ Nome não pode estar vazio. Digite o nome do template:")
+                return
+            
+            # Store name and move to type selection
+            template_data['name'] = name
+            context.user_data['template_data'] = template_data
+            context.user_data['creating_template_step'] = 'type'
+            
+            # Show type selection buttons
+            await show_template_type_selection(update, name)
+            
+        elif step == 'content':
+            # Step 3: Store content and create template
+            content = text.strip()
+            if not content:
+                await update.message.reply_text("❌ Conteúdo não pode estar vazio. Digite o conteúdo do template:")
+                return
+            
+            template_data['content'] = content
+            
+            # Create the template
+            await create_template_final(update, context, template_data)
+            
+    except Exception as e:
+        logger.error(f"Error processing template creation: {e}")
+        # Clear creation state on error
+        context.user_data.pop('creating_template_step', None)
+        context.user_data.pop('template_data', None)
+        # Restore main keyboard
+        reply_markup = get_main_keyboard()
+        await update.message.reply_text("❌ Erro ao processar criação do template.", reply_markup=reply_markup)
+
+async def show_template_type_selection(update: Update, template_name: str):
+    """Show template type selection buttons - Step 2"""
+    text = f"""➕ CRIAR NOVO TEMPLATE - Etapa 2/3
+
+📝 Nome: {template_name}
+
+🏷️ Selecione o tipo do template:"""
+    
+    keyboard = [
+        [InlineKeyboardButton("🎉 Boas-vindas", callback_data="template_type_welcome")],
+        [InlineKeyboardButton("📅 Lembrete 2 dias antes", callback_data="template_type_reminder_2days")],
+        [InlineKeyboardButton("⏰ Lembrete 1 dia antes", callback_data="template_type_reminder_1day")],
+        [InlineKeyboardButton("🚨 Lembrete no vencimento", callback_data="template_type_reminder_due")],
+        [InlineKeyboardButton("❌ Lembrete após vencimento", callback_data="template_type_reminder_overdue")],
+        [InlineKeyboardButton("✅ Renovação confirmada", callback_data="template_type_renewal")],
+        [InlineKeyboardButton("🔧 Personalizado", callback_data="template_type_custom")],
+        [InlineKeyboardButton("❌ Cancelar", callback_data="template_type_cancel")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(text, reply_markup=reply_markup)
+
+async def template_type_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle template type selection"""
     if not update.callback_query:
         return
         
     query = update.callback_query
     await query.answer()
     
-    text = """➕ CRIAR NOVO TEMPLATE
+    user = query.from_user
+    
+    try:
+        callback_data = query.data
+        
+        if callback_data == "template_type_cancel":
+            context.user_data.pop('creating_template_step', None)
+            context.user_data.pop('template_data', None)
+            await query.edit_message_text("❌ Criação de template cancelada.")
+            return
+        
+        # Extract template type from callback data
+        template_type = callback_data.replace("template_type_", "")
+        
+        # Store template type
+        template_data = context.user_data.get('template_data', {})
+        template_data['type'] = template_type
+        context.user_data['template_data'] = template_data
+        context.user_data['creating_template_step'] = 'content'
+        
+        # Show content input with variables
+        await show_template_content_input(query, template_data['name'], template_type)
+        
+    except Exception as e:
+        logger.error(f"Error in template type callback: {e}")
+        await query.edit_message_text("❌ Erro ao selecionar tipo do template.")
+        context.user_data.pop('creating_template_step', None)
+        context.user_data.pop('template_data', None)
 
-📝 Digite as informações do template no formato:
+async def show_template_content_input(query, template_name: str, template_type: str):
+    """Show template content input - Step 3"""
+    type_names = {
+        'welcome': 'Boas-vindas',
+        'reminder_2days': 'Lembrete 2 dias antes',
+        'reminder_1day': 'Lembrete 1 dia antes',
+        'reminder_due': 'Lembrete no vencimento',
+        'reminder_overdue': 'Lembrete após vencimento',
+        'renewal': 'Renovação confirmada',
+        'custom': 'Personalizado'
+    }
+    
+    text = f"""➕ CRIAR NOVO TEMPLATE - Etapa 3/3
 
-TIPO|NOME|CONTEUDO
+📝 Nome: {template_name}
+🏷️ Tipo: {type_names.get(template_type, template_type)}
 
-Tipos disponíveis:
-- welcome (boas-vindas)
-- reminder_2_days (lembrete 2 dias)
-- reminder_1_day (lembrete 1 dia)  
-- reminder_due_date (lembrete vencimento)
-- reminder_overdue (lembrete em atraso)
-- renewal (renovação)
-- custom (personalizado)
+📄 Digite o conteúdo do template:
 
-Variáveis disponíveis:
-{nome}, {plano}, {valor}, {vencimento}, {servidor}, {informacoes_extras}
+💡 **Variáveis disponíveis** (copie e cole):
+• `{{nome}}` - Nome do cliente
+• `{{plano}}` - Plano do cliente  
+• `{{valor}}` - Valor da mensalidade
+• `{{vencimento}}` - Data de vencimento
+• `{{servidor}}` - Servidor do cliente
+• `{{informacoes_extras}}` - Informações extras
 
-Exemplo:
-custom|Promoção|Olá {nome}! Oferta especial para o {plano} por apenas {valor}!"""
+❌ Digite 'cancelar' para cancelar a criação."""
     
     await query.edit_message_text(text)
-    
-    # Store user state for template creation
-    context.user_data['creating_template'] = True
 
-async def process_template_creation(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str):
-    """Process template creation from user input"""
-    if not update.effective_user:
-        return
-        
+async def create_template_final(update: Update, context: ContextTypes.DEFAULT_TYPE, template_data: dict):
+    """Create the final template in database"""
     user = update.effective_user
     
     try:
-        # Parse input format: TIPO|NOME|CONTEUDO
-        parts = text.split('|', 2)
-        
-        if len(parts) != 3:
-            await update.message.reply_text("❌ Formato incorreto. Use: TIPO|NOME|CONTEUDO")
-            return
-        
-        template_type, name, content = [part.strip() for part in parts]
-        
-        # Validate template type
-        valid_types = ['welcome', 'reminder_2_days', 'reminder_1_day', 'reminder_due_date', 'reminder_overdue', 'renewal', 'custom']
-        if template_type not in valid_types:
-            await update.message.reply_text(f"❌ Tipo inválido. Use um dos tipos: {', '.join(valid_types)}")
-            return
-        
-        if not name or not content:
-            await update.message.reply_text("❌ Nome e conteúdo são obrigatórios.")
-            return
-        
         with db_service.get_session() as session:
             db_user = session.query(User).filter_by(telegram_id=str(user.id)).first()
             
@@ -4332,22 +4507,12 @@ async def process_template_creation(update: Update, context: ContextTypes.DEFAUL
                 await update.message.reply_text("❌ Conta inativa.")
                 return
             
-            # Check if template name already exists
-            existing = session.query(MessageTemplate).filter_by(
-                user_id=db_user.id, 
-                name=name
-            ).first()
-            
-            if existing:
-                await update.message.reply_text(f"❌ Já existe um template com o nome '{name}'.")
-                return
-            
             # Create new template
             new_template = MessageTemplate(
                 user_id=db_user.id,
-                name=name,
-                template_type=template_type,
-                content=content,
+                name=template_data['name'],
+                template_type=template_data['type'],
+                content=template_data['content'],
                 is_active=True
             )
             
@@ -4355,15 +4520,21 @@ async def process_template_creation(update: Update, context: ContextTypes.DEFAUL
             session.commit()
             
             # Clear creation state
-            context.user_data['creating_template'] = False
+            context.user_data.pop('creating_template_step', None)
+            context.user_data.pop('template_data', None)
             
-            await update.message.reply_text(f"✅ Template '{name}' criado com sucesso!")
+            # Restore main keyboard
+            reply_markup = get_main_keyboard()
+            await update.message.reply_text(f"✅ Template '{template_data['name']}' criado com sucesso!", reply_markup=reply_markup)
             
     except Exception as e:
-        logger.error(f"Error creating template: {e}")
-        await update.message.reply_text("❌ Erro ao criar template.")
+        logger.error(f"Error creating final template: {e}")
         # Clear creation state on error
-        context.user_data['creating_template'] = False
+        context.user_data.pop('creating_template_step', None)
+        context.user_data.pop('template_data', None)
+        # Restore main keyboard
+        reply_markup = get_main_keyboard()
+        await update.message.reply_text("❌ Erro ao criar template.", reply_markup=reply_markup)
 
 async def template_edit_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle template edit callback"""
@@ -4394,6 +4565,28 @@ async def template_edit_callback(update: Update, context: ContextTypes.DEFAULT_T
             
             if not template:
                 await query.edit_message_text("❌ Template não encontrado.")
+                return
+            
+            # Check if template is a default template (protected)
+            if getattr(template, 'is_default', False):
+                text = f"""🔒 TEMPLATE PADRÃO PROTEGIDO: {template.name}
+
+⚠️ Este é um template padrão que não pode ser editado para preservar sua integridade.
+
+📋 Para personalizar, use uma das opções:
+• 📝 Criar novo template baseado neste
+• 📋 Copiar conteúdo para uso manual
+
+🔧 Tipo: {template.template_type}
+📄 Conteúdo original:
+{template.content}"""
+                
+                keyboard = [
+                    [InlineKeyboardButton("📝 Criar Baseado Neste", callback_data=f"template_copy_{template_id}")],
+                    [InlineKeyboardButton("🔙 Voltar aos Templates", callback_data="templates_list")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(text, reply_markup=reply_markup)
                 return
             
             text = f"""📝 EDITAR TEMPLATE: {template.name}
@@ -4444,26 +4637,65 @@ async def template_copy_callback(update: Update, context: ContextTypes.DEFAULT_T
                 await query.edit_message_text("❌ Template não encontrado.")
                 return
             
-            # Send template content as a separate message for easy copying
-            copy_message = f"""📋 CONTEÚDO DO TEMPLATE: {template.name}
+            # If template is default, create a copy as new custom template
+            if getattr(template, 'is_default', False):
+                # Create a new template based on the default one
+                new_name = f"Cópia de {template.name}"
+                new_template = MessageTemplate(
+                    user_id=db_user.id,
+                    name=new_name,
+                    template_type='custom',  # Mark as custom type
+                    content=template.content,
+                    is_active=True,
+                    is_default=False  # Make sure it's not marked as default
+                )
+                
+                session.add(new_template)
+                session.commit()
+                
+                text = f"""✅ TEMPLATE COPIADO COM SUCESSO!
+
+📝 Novo template criado: "{new_name}"
+🔧 Tipo: Personalizado
+📄 Conteúdo: Baseado no template "{template.name}"
+
+🎯 Agora você pode editar este template personalizado livremente!
+
+💡 Variáveis disponíveis:
+• {{client_name}} - Nome do cliente
+• {{plan_name}} - Plano do cliente  
+• {{plan_price}} - Valor da mensalidade
+• {{due_date}} - Data de vencimento
+• {{server}} - Servidor do cliente
+• {{other_info}} - Informações extras"""
+                
+                keyboard = [
+                    [InlineKeyboardButton("✏️ Editar Agora", callback_data=f"template_edit_{new_template.id}")],
+                    [InlineKeyboardButton("📋 Ver Templates", callback_data="templates_list")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await query.edit_message_text(text, reply_markup=reply_markup)
+            else:
+                # Send template content as a separate message for easy copying
+                copy_message = f"""📋 CONTEÚDO DO TEMPLATE: {template.name}
 
 {template.content}
 
 📝 Você pode copiar o texto acima e editar como quiser!
 
 💡 Variáveis disponíveis:
-• {{nome}} - Nome do cliente
-• {{plano}} - Plano do cliente  
-• {{valor}} - Valor da mensalidade
-• {{vencimento}} - Data de vencimento
-• {{servidor}} - Servidor do cliente
-• {{informacoes_extras}} - Informações extras"""
-            
-            # Send as new message to make copying easier
-            await query.message.reply_text(copy_message)
-            
-            # Also update the current message to show success
-            await query.edit_message_text(f"✅ Conteúdo do template '{template.name}' copiado para o chat acima!")
+• {{client_name}} - Nome do cliente
+• {{plan_name}} - Plano do cliente  
+• {{plan_price}} - Valor da mensalidade
+• {{due_date}} - Data de vencimento
+• {{server}} - Servidor do cliente
+• {{other_info}} - Informações extras"""
+                
+                # Send as new message to make copying easier
+                await query.message.reply_text(copy_message)
+                
+                # Also update the current message to show success
+                await query.edit_message_text(f"✅ Conteúdo do template '{template.name}' copiado para o chat acima!")
             
     except Exception as e:
         logger.error(f"Error copying template: {e}")
@@ -4723,6 +4955,9 @@ def main():
         for pattern in keyboard_patterns:
             application.add_handler(MessageHandler(filters.Regex(pattern), handle_keyboard_buttons))
         
+        # Add a general text handler to catch all text messages (including template creation)
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_keyboard_buttons))
+        
         # NOTE: ConversationHandlers now have priority over other text handlers
         
         # Callback query handlers (for backwards compatibility)
@@ -4766,6 +5001,7 @@ def main():
         application.add_handler(CallbackQueryHandler(template_send_callback, pattern="^template_send_\\d+$"))
         application.add_handler(CallbackQueryHandler(send_template_to_client_callback, pattern="^send_template_to_\\d+_\\d+$"))
         application.add_handler(CallbackQueryHandler(template_create_new_callback, pattern="^template_create_new$"))
+        application.add_handler(CallbackQueryHandler(template_type_callback, pattern="^template_type_.*$"))
         application.add_handler(CallbackQueryHandler(template_edit_callback, pattern="^template_edit_\\d+$"))
         application.add_handler(CallbackQueryHandler(template_copy_callback, pattern="^template_copy_\\d+$"))
         

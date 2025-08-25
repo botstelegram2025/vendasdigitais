@@ -45,40 +45,40 @@ class DatabaseService:
         """Create default message templates for a specific user"""
         default_templates = [
             {
-                'name': 'Lembrete 2 dias antes',
+                'name': '📅 Lembrete 2 dias antes',
                 'template_type': 'reminder_2days',
                 'subject': 'Lembrete: Vencimento em 2 dias',
-                'content': 'Olá {client_name}! 👋\n\nEste é um lembrete amigável de que seu plano "{plan_name}" vencerá em 2 dias ({due_date}).\n\nValor: R$ {plan_price}\n\nPara renovar, entre em contato conosco.\n\nObrigado! 😊'
+                'content': '📅 LEMBRETE: 2 DIAS PARA VENCER\n\nOlá {nome}! \n\n📺 Seu plano "{plano}" vencerá em 2 dias.\n📅 Data de vencimento: {vencimento}\n💰 Valor: R$ {valor}\n\nPara renovar, entre em contato conosco.\n\nObrigado! 😊'
             },
             {
-                'name': 'Lembrete 1 dia antes',
+                'name': '⏰ Lembrete 1 dia antes',
                 'template_type': 'reminder_1day',
                 'subject': 'Lembrete: Vencimento amanhã',
-                'content': 'Olá {client_name}! ⏰\n\nSeu plano "{plan_name}" vence AMANHÃ ({due_date}).\n\nValor: R$ {plan_price}\n\nNão esqueça de renovar para continuar aproveitando nossos serviços!\n\nRenove agora! 🚀'
+                'content': '⏰ ÚLTIMO AVISO: VENCE AMANHÃ!\n\nOlá {nome}!\n\n📺 Seu plano "{plano}" vence AMANHÃ ({vencimento}).\n💰 Valor: R$ {valor}\n\nNão esqueça de renovar para continuar aproveitando nossos serviços!\n\nRenove agora! 🚀'
             },
             {
-                'name': 'Lembrete no vencimento',
+                'name': '🚨 Vencimento hoje',
                 'template_type': 'reminder_due',
                 'subject': 'Vencimento hoje',
-                'content': 'Olá {client_name}! 📅\n\nSeu plano "{plan_name}" vence HOJE ({due_date}).\n\nValor: R$ {plan_price}\n\nRenove agora para não perder o acesso aos nossos serviços.\n\nContate-nos para renovar! 💬'
+                'content': '🚨 ATENÇÃO: VENCE HOJE!\n\nOlá {nome}!\n\n📺 Seu plano "{plano}" vence HOJE ({vencimento}).\n💰 Valor: R$ {valor}\n\nRenove agora para não perder o acesso aos nossos serviços.\n\nContate-nos para renovar! 💬'
             },
             {
-                'name': 'Lembrete após vencimento',
+                'name': '❌ Em atraso',
                 'template_type': 'reminder_overdue',
                 'subject': 'Plano vencido',
-                'content': 'Olá {client_name}! ⚠️\n\nSeu plano "{plan_name}" venceu ontem ({due_date}).\n\nValor: R$ {plan_price}\n\nRenove o quanto antes para reativar seus serviços.\n\nEstamos aqui para ajudar! 🤝'
+                'content': '❌ PLANO VENCIDO - AÇÃO NECESSÁRIA!\n\nOlá {nome}!\n\n📺 Seu plano "{plano}" venceu em {vencimento}.\n💰 Valor: R$ {valor}\n\n⚠️ Renove o quanto antes para reativar seus serviços.\n\nEstamos aqui para ajudar! 🤝'
             },
             {
-                'name': 'Boas-vindas',
+                'name': '🎉 Boas-vindas',
                 'template_type': 'welcome',
                 'subject': 'Bem-vindo!',
-                'content': 'Olá {client_name}! 🎉\n\nSeja muito bem-vindo(a)!\n\nSeu plano "{plan_name}" está ativo e vence em {due_date}.\n\nValor: R$ {plan_price}\n\nEstamos muito felizes em tê-lo(a) conosco! 🌟'
+                'content': '🎉 SEJA BEM-VINDO(A)!\n\nOlá {nome}!\n\n🌟 Seja muito bem-vindo(a) à nossa família!\n\n📺 Seu plano "{plano}" está ativo e vence em {vencimento}.\n💰 Valor: R$ {valor}\n\nEstamos muito felizes em tê-lo(a) conosco! \n\nAproveite nossos serviços! 🚀'
             },
             {
-                'name': 'Renovação',
+                'name': '✅ Renovação confirmada',
                 'template_type': 'renewal',
                 'subject': 'Plano renovado com sucesso!',
-                'content': 'Olá {client_name}! ✅\n\nSeu plano "{plan_name}" foi renovado com sucesso!\n\nNovo vencimento: {due_date}\nValor: R$ {plan_price}\n\nObrigado pela confiança! Continue aproveitando nossos serviços. 🚀'
+                'content': '✅ RENOVAÇÃO CONFIRMADA COM SUCESSO!\n\nOlá {nome}!\n\n🎊 Seu plano "{plano}" foi renovado com sucesso!\n\n📅 Novo vencimento: {vencimento}\n💰 Valor: R$ {valor}\n\nObrigado pela confiança! Continue aproveitando nossos serviços. 🌟'
             }
         ]
         
@@ -91,9 +91,75 @@ class DatabaseService:
                 
                 if not existing:
                     template_data['user_id'] = user_id
+                    template_data['is_default'] = True  # Mark as default template
                     template = MessageTemplate(**template_data)
                     session.add(template)
                     logger.info(f"Created default template for user {user_id}: {template_data['name']}")
+    
+    def restore_default_templates(self, user_id):
+        """Restore all default templates to original state"""
+        default_templates = [
+            {
+                'name': '📅 Lembrete 2 dias antes',
+                'template_type': 'reminder_2days',
+                'subject': 'Lembrete: Vencimento em 2 dias',
+                'content': '📅 LEMBRETE: 2 DIAS PARA VENCER\n\nOlá {nome}! \n\n📺 Seu plano "{plano}" vencerá em 2 dias.\n📅 Data de vencimento: {vencimento}\n💰 Valor: R$ {valor}\n\nPara renovar, entre em contato conosco.\n\nObrigado! 😊'
+            },
+            {
+                'name': '⏰ Lembrete 1 dia antes',
+                'template_type': 'reminder_1day',
+                'subject': 'Lembrete: Vencimento amanhã',
+                'content': '⏰ ÚLTIMO AVISO: VENCE AMANHÃ!\n\nOlá {nome}!\n\n📺 Seu plano "{plano}" vence AMANHÃ ({vencimento}).\n💰 Valor: R$ {valor}\n\nNão esqueça de renovar para continuar aproveitando nossos serviços!\n\nRenove agora! 🚀'
+            },
+            {
+                'name': '🚨 Vencimento hoje',
+                'template_type': 'reminder_due',
+                'subject': 'Vencimento hoje',
+                'content': '🚨 ATENÇÃO: VENCE HOJE!\n\nOlá {nome}!\n\n📺 Seu plano "{plano}" vence HOJE ({vencimento}).\n💰 Valor: R$ {valor}\n\nRenove agora para não perder o acesso aos nossos serviços.\n\nContate-nos para renovar! 💬'
+            },
+            {
+                'name': '❌ Em atraso',
+                'template_type': 'reminder_overdue',
+                'subject': 'Plano vencido',
+                'content': '❌ PLANO VENCIDO - AÇÃO NECESSÁRIA!\n\nOlá {nome}!\n\n📺 Seu plano "{plano}" venceu em {vencimento}.\n💰 Valor: R$ {valor}\n\n⚠️ Renove o quanto antes para reativar seus serviços.\n\nEstamos aqui para ajudar! 🤝'
+            },
+            {
+                'name': '🎉 Boas-vindas',
+                'template_type': 'welcome',
+                'subject': 'Bem-vindo!',
+                'content': '🎉 SEJA BEM-VINDO(A)!\n\nOlá {nome}!\n\n🌟 Seja muito bem-vindo(a) à nossa família!\n\n📺 Seu plano "{plano}" está ativo e vence em {vencimento}.\n💰 Valor: R$ {valor}\n\nEstamos muito felizes em tê-lo(a) conosco! \n\nAproveite nossos serviços! 🚀'
+            },
+            {
+                'name': '✅ Renovação confirmada',
+                'template_type': 'renewal',
+                'subject': 'Plano renovado com sucesso!',
+                'content': '✅ RENOVAÇÃO CONFIRMADA COM SUCESSO!\n\nOlá {nome}!\n\n🎊 Seu plano "{plano}" foi renovado com sucesso!\n\n📅 Novo vencimento: {vencimento}\n💰 Valor: R$ {valor}\n\nObrigado pela confiança! Continue aproveitando nossos serviços. 🌟'
+            }
+        ]
+        
+        with self.get_session() as session:
+            # Update existing default templates
+            for template_data in default_templates:
+                existing = session.query(MessageTemplate).filter_by(
+                    template_type=template_data['template_type'],
+                    user_id=user_id,
+                    is_default=True
+                ).first()
+                
+                if existing:
+                    # Update existing default template
+                    existing.name = template_data['name']
+                    existing.subject = template_data['subject']
+                    existing.content = template_data['content']
+                    existing.is_active = True
+                    logger.info(f"Restored default template for user {user_id}: {template_data['name']}")
+                else:
+                    # Create new default template if missing
+                    template_data['user_id'] = user_id
+                    template_data['is_default'] = True
+                    template = MessageTemplate(**template_data)
+                    session.add(template)
+                    logger.info(f"Created missing default template for user {user_id}: {template_data['name']}")
 
 # Global database service instance
 db_service = DatabaseService()

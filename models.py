@@ -81,6 +81,7 @@ class MessageTemplate(Base):
     subject = Column(String(200))
     content = Column(Text, nullable=False)
     is_active = Column(Boolean, default=True)
+    is_default = Column(Boolean, default=False)  # Protect default templates from editing
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
