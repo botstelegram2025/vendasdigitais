@@ -81,8 +81,8 @@ RUN printf '%s\n' '#!/bin/bash' \
   'done' \
   '' \
   '# URL interna para o bot Python' \
-  'export WHATSAPP_URL="http://127.0.0.1:3001"' \
-  'export BAILEYS_API_URL="$WHATSAPP_URL"' \
+  'WHATSAPP_URL="http://127.0.0.1:$PORT"' \
+  'BAILEYS_API_URL="$WHATSAPP_URL"' \
   'echo "[BOOT] WHATSAPP_URL=$WHATSAPP_URL"' \
   '' \
   'echo "🤖 Starting Telegram bot..."' \
