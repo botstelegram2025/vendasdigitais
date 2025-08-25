@@ -4,7 +4,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# 🔧 Pega URL dinâmica exportada no start.sh
+# 🔧 URL do Baileys - dinâmica (Railway exporta no start.sh)
 BAILEYS_API_URL = os.getenv("BAILEYS_API_URL", "http://127.0.0.1:3001")
 
 async def call_baileys(method: str, endpoint: str, user_id: str, json=None):
@@ -22,13 +22,49 @@ async def call_baileys(method: str, endpoint: str, user_id: str, json=None):
         logger.error(f"❌ Error calling Baileys {endpoint}: {e}")
         return {"success": False, "error": str(e)}
 
-# ---- Wrappers ----
-async def force_qr(user_id: str): return await call_baileys("POST", "/force-qr", user_id)
-async def reconnect(user_id: str): return await call_baileys("POST", "/reconnect", user_id)
-async def get_status(user_id: str): return await call_baileys("GET", "/status", user_id)
-async def get_qr(user_id: str): return await call_baileys("GET", "/qr", user_id)
+# ---- Wrappers assíncronos ----
+async def force_qr(user_id: str): 
+    return await call_baileys("POST", "/force-qr", user_id)
+
+async def reconnect(user_id: str): 
+    return await call_baileys("POST", "/reconnect", user_id)
+
+async def get_status(user_id: str): 
+    return await call_baileys("GET", "/status", user_id)
+
+async def get_qr(user_id: str): 
+    return await call_baileys("GET", "/qr", user_id)
+
 async def send_message(user_id: str, number: str, message: str):
     return await call_baileys("POST", "/send", user_id, json={"number": number, "message": message})
-async def disconnect(user_id: str): return await call_baileys("POST", "/disconnect", user_id)
+
+async def disconnect(user_id: str): 
+    return await call_baileys("POST", "/disconnect", user_id)
+
 async def generate_pairing_code(user_id: str, phone_number: str):
     return await call_baileys("POST", "/generate-pairing-code", user_id, json={"phoneNumber": phone_number})
+
+
+# ---- Classe/instância global ----
+class WhatsAppService:
+    def __init__(self, base_url=None):
+        self.base_url = base_url or BAILEYS_API_URL
+
+    async def get_status(self, user_id: str):
+        return await call_baileys("GET", "/status", user_id)
+
+    async def force_qr(self, user_id: str):
+        return await force_qr(user_id)
+
+    async def reconnect(self, user_id: str):
+        return await reconnect(user_id)
+
+    async def send_message(self, user_id: str, number: str, message: str):
+        return await send_message(user_id, number, message)
+
+    async def generate_pairing_code(self, user_id: str, phone_number: str):
+        return await generate_pairing_code(user_id, phone_number)
+
+
+# 🔑 Instância global (para importar no main.py)
+whatsapp_service = WhatsAppService()
