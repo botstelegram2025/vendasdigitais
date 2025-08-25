@@ -448,33 +448,71 @@ class WhatsAppService:
             'error': 'All reconnection attempts failed'
         }
     
-    def force_new_qr(self, user_id: int) -> Dict[str, Any]:
+    def _wait_for_server_ready(self, max_wait_time=30) -> bool:
         """
-        Force generate a new QR code - GUARANTEED to work with retry logic
+        Wait for WhatsApp server to be ready before making requests
         """
         import time
         
-        max_retries = 3
+        start_time = time.time()
+        while time.time() - start_time < max_wait_time:
+            try:
+                health = self.get_health_status()
+                if health.get('success', False):
+                    logger.info("WhatsApp server is ready")
+                    return True
+            except:
+                pass
+            
+            logger.info("Waiting for WhatsApp server to be ready...")
+            time.sleep(2)
+        
+        logger.warning("WhatsApp server not ready after waiting")
+        return False
+    
+    def force_new_qr(self, user_id: int) -> Dict[str, Any]:
+        """
+        Force generate a new QR code - ULTRA ROBUST with server health check
+        """
+        import time
+        
+        # First, wait for server to be ready
+        logger.info(f"Checking WhatsApp server health before QR generation for user {user_id}")
+        if not self._wait_for_server_ready(15):
+            return {
+                'success': False,
+                'error': 'WhatsApp server is not ready',
+                'details': 'Server health check failed'
+            }
+        
+        max_retries = 5  # Increased retries
+        base_delay = 2
+        
         for attempt in range(max_retries):
             try:
                 url = f"{self.baileys_url}/force-qr/{user_id}"
                 
                 logger.info(f"Attempting to force QR code for user {user_id} (attempt {attempt + 1}/{max_retries})")
                 
+                # Progressive timeout increase
+                timeout = 30 + (attempt * 15)  # 30, 45, 60, 75, 90 seconds
+                
                 response = requests.post(
                     url,
                     headers=self.headers,
-                    timeout=45  # Railway optimized timeout
+                    timeout=timeout
                 )
                 
                 if response.status_code == 200:
                     result = response.json()
-                    logger.info(f"QR code generated successfully for user {user_id}")
+                    logger.info(f"✅ QR code generated successfully for user {user_id}")
                     return result
                 else:
                     logger.warning(f"HTTP {response.status_code} on attempt {attempt + 1}: {response.text}")
                     if attempt < max_retries - 1:
-                        time.sleep(2)  # Wait 2 seconds before retry
+                        delay = base_delay * (2 ** attempt)  # Exponential backoff: 2, 4, 8, 16
+                        logger.info(f"Waiting {delay} seconds before retry...")
+                        time.sleep(delay)
                         continue
                     
                     return {
@@ -486,7 +524,12 @@ class WhatsAppService:
             except requests.exceptions.ConnectionError as e:
                 logger.error(f"Connection error on attempt {attempt + 1}: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(3)  # Wait longer for connection issues
+                    delay = base_delay * (2 ** attempt) + 2  # Extra delay for connection issues
+                    logger.info(f"Connection failed, waiting {delay} seconds before retry...")
+                    time.sleep(delay)
+                    
+                    # Quick health check before retry
+                    self._wait_for_server_ready(5)
                     continue
                     
                 return {
@@ -498,7 +541,9 @@ class WhatsAppService:
             except requests.exceptions.Timeout as e:
                 logger.error(f"Timeout on attempt {attempt + 1}: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(2)
+                    delay = base_delay * (attempt + 1)  # Linear backoff for timeouts
+                    logger.info(f"Request timeout, waiting {delay} seconds before retry...")
+                    time.sleep(delay)
                     continue
                     
                 return {
@@ -510,7 +555,9 @@ class WhatsAppService:
             except Exception as e:
                 logger.error(f"Unexpected error on attempt {attempt + 1}: {e}")
                 if attempt < max_retries - 1:
-                    time.sleep(2)
+                    delay = base_delay * (attempt + 1)
+                    logger.info(f"Unexpected error, waiting {delay} seconds before retry...")
+                    time.sleep(delay)
                     continue
                     
                 return {
@@ -522,7 +569,7 @@ class WhatsAppService:
         # This should never be reached, but just in case
         return {
             'success': False,
-            'error': 'All retry attempts failed'
+            'error': f'All {max_retries} retry attempts failed'
         }
     
     def format_message(self, template: str, **kwargs) -> str:
