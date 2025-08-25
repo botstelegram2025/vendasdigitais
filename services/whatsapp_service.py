@@ -4,8 +4,9 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# 🔧 URL do Baileys - dinâmica (Railway exporta no start.sh)
+# 🔧 Pega URL dinâmica exportada no start.sh
 BAILEYS_API_URL = os.getenv("BAILEYS_API_URL", "http://127.0.0.1:3001")
+
 
 async def call_baileys(method: str, endpoint: str, user_id: str, json=None):
     url = f"{BAILEYS_API_URL}{endpoint}/{user_id}"
@@ -22,7 +23,8 @@ async def call_baileys(method: str, endpoint: str, user_id: str, json=None):
         logger.error(f"❌ Error calling Baileys {endpoint}: {e}")
         return {"success": False, "error": str(e)}
 
-# ---- Wrappers assíncronos ----
+
+# ---- Wrappers ----
 async def force_qr(user_id: str): 
     return await call_baileys("POST", "/force-qr", user_id)
 
@@ -45,7 +47,7 @@ async def generate_pairing_code(user_id: str, phone_number: str):
     return await call_baileys("POST", "/generate-pairing-code", user_id, json={"phoneNumber": phone_number})
 
 
-# ---- Classe/instância global ----
+# ---- Classe principal ----
 class WhatsAppService:
     def __init__(self, base_url=None):
         self.base_url = base_url or BAILEYS_API_URL
@@ -65,6 +67,17 @@ class WhatsAppService:
     async def generate_pairing_code(self, user_id: str, phone_number: str):
         return await generate_pairing_code(user_id, phone_number)
 
+    async def disconnect(self, user_id: str):
+        return await disconnect(user_id)
 
-# 🔑 Instância global (para importar no main.py)
+    # 🔧 Alias para retrocompatibilidade
+    async def check_instance_status(self, user_id: str):
+        """
+        Compatibilidade com código legado:
+        check_instance_status → get_status
+        """
+        return await self.get_status(user_id)
+
+
+# 🔑 Instância global para importar direto no main.py
 whatsapp_service = WhatsAppService()
