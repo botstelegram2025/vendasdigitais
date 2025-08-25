@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "🚀 Starting Railway Deployment (monolito)..."
 
-# 🔧 Configuração do Baileys (sempre porta 3001 interna)
+# 🔧 Configuração do Baileys (sempre porta fixa interna 3001)
 export BAILEYS_PORT=3001
 export RAILWAY_ENVIRONMENT_NAME=${RAILWAY_ENVIRONMENT_NAME:-production}
 
@@ -25,7 +25,7 @@ for i in {1..40}; do
   fi
 done
 
-# 🌐 URL interna para o bot Python conversar com o Baileys
+# 🌐 URL interna para o bot Python conversar com Baileys
 export WHATSAPP_URL="http://127.0.0.1:$BAILEYS_PORT"
 export BAILEYS_API_URL="$WHATSAPP_URL"
 echo "[BOOT] WHATSAPP_URL=$WHATSAPP_URL"
