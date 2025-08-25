@@ -20,9 +20,9 @@ const SESSION_BASE = process.env.SESSION_DIR || path.join(__dirname, 'sessions')
 if (!fs.existsSync(SESSION_BASE)) fs.mkdirSync(SESSION_BASE, { recursive: true });
 
 // 🔧 Porta do Baileys:
-// Monolito: mantenha 3001 (o bot fala com http://127.0.0.1:3001)
-// Serviço separado (Node-only): defina BAILEYS_PORT=$PORT no Railway
-const PORT = parseInt(process.env.BAILEYS_PORT || '3001', 10);
+// Monolito: BAILEYS_PORT=3001 (bot chama http://127.0.0.1:3001)
+// Serviço separado (Node-only no Railway): usa PORT injetada
+const PORT = parseInt(process.env.BAILEYS_PORT || process.env.PORT || '3001', 10);
 
 const userSessions = new Map();
 
@@ -35,17 +35,13 @@ class ConnectionSemaphore {
   }
   async acquire() {
     return new Promise((resolve) => {
-      if (this.current < this.maxConcurrent) {
-        this.current++; resolve();
-      } else { this.queue.push(resolve); }
+      if (this.current < this.maxConcurrent) { this.current++; resolve(); }
+      else { this.queue.push(resolve); }
     });
   }
   release() {
     this.current--;
-    if (this.queue.length > 0) {
-      const next = this.queue.shift();
-      this.current++; next();
-    }
+    if (this.queue.length > 0) { const next = this.queue.shift(); this.current++; next(); }
   }
 }
 const connectionSemaphore = new ConnectionSemaphore(2);
@@ -68,26 +64,20 @@ class UserWhatsAppSession {
     this.heartbeatFailures = 0;
   }
 
-  _authPath() { // 🔧 caminho centralizado
-    return path.join(SESSION_BASE, this.authFolder);
-  }
+  _authPath() { return path.join(SESSION_BASE, this.authFolder); }
 
   async start(forceNew = false) {
     await connectionSemaphore.acquire();
     try {
       console.log(`🔄 Starting connection for user ${this.userId}, forceNew: ${forceNew}`);
-      if (this.reconnectTimeout) { clearTimeout(this.reconnectTimeout); }
+      if (this.reconnectTimeout) clearTimeout(this.reconnectTimeout);
 
       if (forceNew) {
         const authPath = this._authPath();
         if (fs.existsSync(authPath)) {
           const backupPath = path.join(SESSION_BASE, `backup_${this.authFolder}_${Date.now()}`);
-          try {
-            fs.cpSync(authPath, backupPath, { recursive: true });
-            console.log(`💾 Backup created for user ${this.userId} at ${backupPath}`);
-          } catch (e) {
-            console.log(`⚠️ Could not create backup for user ${this.userId}: ${e.message}`);
-          }
+          try { fs.cpSync(authPath, backupPath, { recursive: true }); console.log(`💾 Backup created for user ${this.userId} at ${backupPath}`); }
+          catch (e) { console.log(`⚠️ Could not create backup for user ${this.userId}: ${e.message}`); }
           fs.rmSync(authPath, { recursive: true, force: true });
           console.log(`🧹 Cleaned auth for user ${this.userId} - will generate new QR`);
         }
@@ -128,7 +118,6 @@ class UserWhatsAppSession {
           this.connectionState = 'qr_generated';
         }
 
-        // Pairing code em novo login (se número estiver setado)
         if (isNewLogin && !this.pairingCode && this.phoneNumber) {
           try {
             const code = await this.sock.requestPairingCode(this.phoneNumber);
@@ -165,7 +154,7 @@ class UserWhatsAppSession {
           } else if (statusCode === 401) {
             console.log(`🔐 Auth error 401 for user ${this.userId}, forcing clean QR generation...`);
             try {
-              const authPath = this._authPath(); // 🔧
+              const authPath = this._authPath();
               if (fs.existsSync(authPath)) {
                 fs.rmSync(authPath, { recursive: true, force: true });
                 console.log(`🗑️ Removed corrupted session for user ${this.userId}`);
@@ -210,29 +199,19 @@ class UserWhatsAppSession {
 
   async sendMessage(number, message) {
     if (!this.sock) throw new Error('WhatsApp não conectado para este usuário');
-
-    if (!this.isConnected) {
-      console.log(`⚠️ User ${this.userId} marked as disconnected but attempting to send anyway...`);
-    }
+    if (!this.isConnected) console.log(`⚠️ User ${this.userId} marked as disconnected but attempting to send anyway...`);
 
     let formattedNumber = number.replace(/\D/g, '');
-    // 🔧 formatação robusta: se não começa com 55, prefixa 55
-    if (!formattedNumber.startsWith('55')) {
-      formattedNumber = '55' + formattedNumber;
-    }
+    if (!formattedNumber.startsWith('55')) formattedNumber = '55' + formattedNumber; // BR por padrão
     const jid = `${formattedNumber}@s.whatsapp.net`;
 
     try {
       const result = await this.sock.sendMessage(jid, { text: message });
       console.log(`📤 Mensagem enviada pelo usuário ${this.userId} para ${number}: ${message}`);
-      if (!this.isConnected) {
-        this.isConnected = true;
-        this.connectionState = 'connected';
-      }
+      if (!this.isConnected) { this.isConnected = true; this.connectionState = 'connected'; }
       return result;
     } catch (error) {
       console.log(`❌ Erro ao enviar mensagem para usuário ${this.userId}:`, error.message);
-
       if ((error.message || '').toLowerCase().includes('closed') || (error.message || '').includes('ECONNRESET')) {
         this.isConnected = false;
         this.connectionState = 'disconnected';
@@ -251,7 +230,7 @@ class UserWhatsAppSession {
     try {
       if (this.sock?.logout) await this.sock.logout();
       if (this.sock?.ws && this.sock.ws.readyState === 1) this.sock.ws.close();
-    } catch (_) { /* ignore */ }
+    } catch (_) {}
     this.isConnected = false;
     this.connectionState = 'disconnected';
     this.qrCodeData = null;
@@ -306,9 +285,7 @@ class UserWhatsAppSession {
         if (this.reconnectTimeout) { clearTimeout(this.reconnectTimeout); this.reconnectTimeout = null; }
 
         if (this.sock) {
-          try {
-            if (this.sock.ws && this.sock.ws.readyState === 1) this.sock.ws.close();
-          } catch (_) {}
+          try { if (this.sock.ws && this.sock.ws.readyState === 1) this.sock.ws.close(); } catch (_) {}
           this.sock = null;
         }
 
@@ -366,7 +343,6 @@ class UserWhatsAppSession {
         setTimeout(async () => {
           try {
             let formatted = (phoneNumber || '').replace(/\D/g, '');
-            // 🔧 regra simples: se não começa com 55, prefixa 55
             if (!formatted.startsWith('55')) formatted = '55' + formatted;
             if (formatted.length < 12 || formatted.length > 13) {
               throw new Error(`Invalid phone number format: ${phoneNumber}. Use E.164, ex: 5561999887766`);
@@ -383,9 +359,7 @@ class UserWhatsAppSession {
           }
         }, 1500);
 
-        setTimeout(() => {
-          if (!this.pairingCode) resolve({ success: false, error: 'Timeout generating pairing code' });
-        }, 30000);
+        setTimeout(() => { if (!this.pairingCode) resolve({ success: false, error: 'Timeout generating pairing code' }); }, 30000);
 
       } catch (error) {
         console.error(`❌ Error in pairing code setup for user ${this.userId}:`, error);
@@ -399,9 +373,7 @@ class UserWhatsAppSession {
       console.log(`🚀 Force QR requested for user ${this.userId}`);
       if (this.reconnectTimeout) { clearTimeout(this.reconnectTimeout); this.reconnectTimeout = null; }
       if (this.sock) {
-        try {
-          if (this.sock.ws && this.sock.ws.readyState === 1) this.sock.ws.close();
-        } catch (_) {}
+        try { if (this.sock.ws && this.sock.ws.readyState === 1) this.sock.ws.close(); } catch (_) {}
         this.sock = null;
       }
       this.isConnected = false;
@@ -431,10 +403,7 @@ class UserWhatsAppSession {
   }
 
   getStatus() {
-    if (this.isConnected && !this.sock) {
-      this.isConnected = false;
-      this.connectionState = 'disconnected';
-    }
+    if (this.isConnected && !this.sock) { this.isConnected = false; this.connectionState = 'disconnected'; }
     return {
       userId: this.userId,
       connected: this.isConnected,
@@ -457,13 +426,8 @@ function getUserSession(userId) {
     const initDelay = Math.random() * 1000;
 
     setTimeout(() => {
-      if (hasExistingSession) {
-        console.log(`🔄 Found existing session for user ${userId}, attempting restore...`);
-        session.start(false);
-      } else {
-        console.log(`🆕 No existing session for user ${userId}, creating new...`);
-        session.start(true);
-      }
+      if (hasExistingSession) { console.log(`🔄 Found existing session for user ${userId}, attempting restore...`); session.start(false); }
+      else { console.log(`🆕 No existing session for user ${userId}, creating new...`); session.start(true); }
     }, initDelay);
   }
   return userSessions.get(userId);
@@ -471,35 +435,37 @@ function getUserSession(userId) {
 
 // ---------- API ----------
 
-// 🔧 Health para Dockerfile: /status simples
+// Home informativa (evita "Cannot GET /")
+app.get('/', (req, res) => {
+  res.type('text/plain').send([
+    'Baileys API is running ✅',
+    'Health:   GET /status',
+    'Status:   GET /status/:userId',
+    'QR:       GET /qr/:userId',
+    'Reconnect:POST /reconnect/:userId',
+    'Force QR: POST /force-qr/:userId',
+    'Pairing:  POST /pairing-code/:userId  { phoneNumber }',
+    'Send:     POST /send/:userId          { number, message }',
+    'Sessions: GET /sessions'
+  ].join('\n'));
+});
+
+// Health p/ Dockerfile
 app.get('/status', (req, res) => {
   const connected = Array.from(userSessions.values()).filter(s => s.isConnected).length;
-  res.json({
-    ok: true,
-    service: 'baileys',
-    connectedSessions: connected,
-    totalSessions: userSessions.size,
-    sessionDir: SESSION_BASE,
-    port: PORT,
-    uptime: process.uptime(),
-    ts: new Date().toISOString()
-  });
+  res.json({ ok: true, service: 'baileys', connectedSessions: connected, totalSessions: userSessions.size, sessionDir: SESSION_BASE, port: PORT, uptime: process.uptime(), ts: new Date().toISOString() });
 });
 
 app.get('/status/:userId', async (req, res) => {
   const userId = req.params.userId;
   const session = getUserSession(userId);
   const basicStatus = session.getStatus();
-
   if (basicStatus.connected && session.sock) {
-    try {
-      await session.sock.query({ tag: 'iq', attrs: { type: 'get', xmlns: 'w:profile:picture' } });
-    } catch (error) {
+    try { await session.sock.query({ tag: 'iq', attrs: { type: 'get', xmlns: 'w:profile:picture' } }); }
+    catch (error) {
       console.log(`⚠️ Connection test failed for user ${userId}: ${error.message}`);
-      session.isConnected = false;
-      session.connectionState = 'disconnected';
-      basicStatus.connected = false;
-      basicStatus.state = 'disconnected';
+      session.isConnected = false; session.connectionState = 'disconnected';
+      basicStatus.connected = false; basicStatus.state = 'disconnected';
     }
   }
   res.json({ success: true, ...basicStatus });
@@ -509,26 +475,12 @@ app.get('/qr/:userId', async (req, res) => {
   try {
     const userId = req.params.userId;
     const session = getUserSession(userId);
-
     console.log(`📱 QR requested for user ${userId}, state: ${session.connectionState}, hasQR: ${!!session.qrCodeData}`);
-
-    if (session.isConnected) {
-      return res.json({ success: false, error: 'Already connected', connected: true });
-    }
-    if (session.qrCodeData && session.connectionState === 'qr_generated') {
-      return res.json({ success: true, qrCode: session.qrCodeData });
-    }
-    try {
-      const result = await session.forceQR();
-      res.json(result);
-    } catch (error) {
-      console.error(`❌ QR generation failed for user ${userId}:`, error);
-      res.json({ success: false, message: 'Erro ao gerar QR Code', error: error.message });
-    }
-  } catch (error) {
-    console.error('QR endpoint error:', error);
-    res.json({ success: false, error: 'Internal server error' });
-  }
+    if (session.isConnected) return res.json({ success: false, error: 'Already connected', connected: true });
+    if (session.qrCodeData && session.connectionState === 'qr_generated') return res.json({ success: true, qrCode: session.qrCodeData });
+    try { const result = await session.forceQR(); res.json(result); }
+    catch (error) { console.error(`❌ QR generation failed for user ${userId}:`, error); res.json({ success: false, message: 'Erro ao gerar QR Code', error: error.message }); }
+  } catch (error) { console.error('QR endpoint error:', error); res.json({ success: false, error: 'Internal server error' }); }
 });
 
 app.post('/send/:userId', async (req, res) => {
@@ -538,27 +490,18 @@ app.post('/send/:userId', async (req, res) => {
     const session = userSessions.get(userId);
     if (!session) return res.json({ success: false, error: 'Sessão não encontrada para este usuário' });
     if (!session.sock) return res.json({ success: false, error: 'WhatsApp não conectado para este usuário' });
-
     const result = await session.sendMessage(number, message);
     res.json({ success: true, messageId: result.key.id, response: result });
-  } catch (error) {
-    console.error('Erro ao enviar mensagem:', error);
-    res.json({ success: false, error: error.message });
-  }
+  } catch (error) { console.error('Erro ao enviar mensagem:', error); res.json({ success: false, error: error.message }); }
 });
 
 app.post('/disconnect/:userId', async (req, res) => {
   try {
     const userId = req.params.userId;
     const session = userSessions.get(userId);
-    if (session) {
-      await session.disconnect();
-      userSessions.delete(userId);
-    }
+    if (session) { await session.disconnect(); userSessions.delete(userId); }
     res.json({ success: true, message: 'WhatsApp desconectado para o usuário' });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
+  } catch (error) { res.json({ success: false, error: error.message }); }
 });
 
 app.post('/reconnect/:userId', async (req, res) => {
@@ -567,9 +510,7 @@ app.post('/reconnect/:userId', async (req, res) => {
     const session = getUserSession(userId);
     await session.reconnect();
     res.json({ success: true, message: 'Gerando novo QR Code...' });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
+  } catch (error) { res.json({ success: false, error: error.message }); }
 });
 
 app.post('/force-qr/:userId', async (req, res) => {
@@ -578,9 +519,7 @@ app.post('/force-qr/:userId', async (req, res) => {
     const session = getUserSession(userId);
     const result = await session.forceQR();
     res.json(result);
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
+  } catch (error) { res.json({ success: false, error: error.message }); }
 });
 
 app.post('/pairing-code/:userId', async (req, res) => {
@@ -588,19 +527,13 @@ app.post('/pairing-code/:userId', async (req, res) => {
     const userId = req.params.userId;
     const { phoneNumber } = req.body;
     if (!phoneNumber) return res.json({ success: false, error: 'Número de telefone é obrigatório' });
-
     const session = getUserSession(userId);
-    // 🔧 guarda já no formato E.164 simples (prefixa 55 se faltar)
     let formatted = phoneNumber.replace(/\D/g, '');
     if (!formatted.startsWith('55')) formatted = '55' + formatted;
     session.phoneNumber = formatted;
-
     const result = await session.requestPairingCode(formatted);
     res.json(result);
-  } catch (error) {
-    console.error('Pairing code endpoint error:', error);
-    res.json({ success: false, error: 'Internal server error' });
-  }
+  } catch (error) { console.error('Pairing code endpoint error:', error); res.json({ success: false, error: 'Internal server error' }); }
 });
 
 app.get('/pairing-code/:userId', (req, res) => {
@@ -608,36 +541,20 @@ app.get('/pairing-code/:userId', (req, res) => {
     const userId = req.params.userId;
     const session = userSessions.get(userId);
     if (!session) return res.json({ success: false, error: 'Sessão não encontrada' });
-
-    if (session.pairingCode) {
-      res.json({ success: true, pairingCode: session.pairingCode, state: session.connectionState });
-    } else {
-      res.json({ success: false, message: 'Código de pareamento não disponível' });
-    }
-  } catch (error) {
-    console.error('Get pairing code error:', error);
-    res.json({ success: false, error: 'Internal server error' });
-  }
+    if (session.pairingCode) res.json({ success: true, pairingCode: session.pairingCode, state: session.connectionState });
+    else res.json({ success: false, message: 'Código de pareamento não disponível' });
+  } catch (error) { console.error('Get pairing code error:', error); res.json({ success: false, error: 'Internal server error' }); }
 });
 
 app.get('/sessions', (req, res) => {
-  const sessions = Array.from(userSessions.entries()).map(([userId, session]) => ({
-    userId, ...session.getStatus()
-  }));
+  const sessions = Array.from(userSessions.entries()).map(([userId, session]) => ({ userId, ...session.getStatus() }));
   res.json({ success: true, sessions, totalSessions: sessions.length });
 });
 
 app.get('/health', (req, res) => {
   const connectedSessions = Array.from(userSessions.values()).filter(s => s.isConnected).length;
   const totalSessions = userSessions.size;
-  res.json({
-    success: true,
-    status: 'healthy',
-    connectedSessions,
-    totalSessions,
-    uptime: process.uptime(),
-    timestamp: new Date().toISOString()
-  });
+  res.json({ success: true, status: 'healthy', connectedSessions, totalSessions, uptime: process.uptime(), timestamp: new Date().toISOString() });
 });
 
 app.post('/restore/:userId', async (req, res) => {
@@ -649,9 +566,7 @@ app.post('/restore/:userId', async (req, res) => {
     if (!hasValidSession) return res.json({ success: false, error: 'No valid session found for this user' });
     await session.start(false);
     res.json({ success: true, message: 'Session restore initiated', hasSession: hasValidSession });
-  } catch (error) {
-    res.json({ success: false, error: error.message });
-  }
+  } catch (error) { res.json({ success: false, error: error.message }); }
 });
 
 // Auto-recovery a cada 5 min
@@ -670,7 +585,7 @@ setInterval(() => {
 }, 300000);
 
 // Encerramento gracioso
-process.on('SIGINT', () => {
+function graceful() {
   console.log('🛑 Graceful shutdown initiated...');
   const promises = Array.from(userSessions.values()).map(session => {
     if (session.reconnectTimeout) clearTimeout(session.reconnectTimeout);
@@ -680,7 +595,9 @@ process.on('SIGINT', () => {
     console.log('✅ All sessions closed');
     process.exit(0);
   });
-});
+}
+process.on('SIGINT', graceful);
+process.on('SIGTERM', graceful);
 
 // 🔧 Bind final
 console.log(`📡 Binding to 0.0.0.0:${PORT}`);
