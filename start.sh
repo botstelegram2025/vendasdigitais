@@ -3,7 +3,7 @@ set -euo pipefail
 
 echo "🚀 Starting Railway Deployment (monolito)..."
 
-# Usa porta dinâmica do Railway
+# Railway já fornece a porta em $PORT
 export RAILWAY_ENVIRONMENT_NAME=${RAILWAY_ENVIRONMENT_NAME:-production}
 export WHATSAPP_URL="http://127.0.0.1:${PORT}"
 export BAILEYS_API_URL="$WHATSAPP_URL"
@@ -28,7 +28,7 @@ done
 
 echo "[BOOT] WHATSAPP_URL=$WHATSAPP_URL"
 
-# Inicia o bot Telegram
+# Inicia o bot Telegram (mantém porta separada para o bot)
 echo "🤖 Starting Telegram bot..."
 if [ -z "${PORT_BOT:-}" ]; then export PORT_BOT=5000; fi
 python3 main.py > /app/logs/bot.out 2>&1 &
@@ -42,9 +42,15 @@ cleanup() {
 }
 trap cleanup SIGTERM SIGINT
 
-# Se um dos dois morrer → mata o container
+# Se um dos dois morrer → mata o container para reiniciar limpo
 while true; do
-  if ! kill -0 "$BOT_PID" 2>/dev/null; then echo "❌ Bot died"; exit 1; fi
-  if ! kill -0 "$WHATSAPP_PID" 2>/dev/null; then echo "❌ Baileys died"; exit 1; fi
+  if ! kill -0 "$BOT_PID" 2>/dev/null; then
+    echo "❌ Bot died"
+    exit 1
+  fi
+  if ! kill -0 "$WHATSAPP_PID" 2>/dev/null; then
+    echo "❌ Baileys died"
+    exit 1
+  fi
   sleep 3
 done
