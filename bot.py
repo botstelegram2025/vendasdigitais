@@ -292,7 +292,9 @@ async def main():
     application.add_handler(conv_edit)
     application.add_handler(conv_msg)
 
-    # menus
+    # menus principais
+    application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), listar_clientes))
+    application.add_handler(MessageHandler(filters.Regex("^ADICIONAR CLIENTE$"), start))  # ou menu_handler se quiser o fluxo
     application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_"))
     application.add_handler(CallbackQueryHandler(edit_menu, pattern=r"^editmenu_"))
     application.add_handler(CallbackQueryHandler(renew, pattern=r"^renew_"))
