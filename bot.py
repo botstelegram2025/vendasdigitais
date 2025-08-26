@@ -1,18 +1,22 @@
 import logging
 import os
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
     ContextTypes, ConversationHandler
 )
 import asyncpg
+from datetime import date, timedelta
 
 # --- Variáveis de ambiente ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 POSTGRES_URL = os.environ.get("POSTGRES_URL")
 
 # --- Estados do ConversationHandler ---
-ASK_CLIENT_NAME, ASK_CLIENT_PHONE = range(2)
+(
+    ASK_CLIENT_NAME, ASK_CLIENT_PHONE, ASK_CLIENT_PACKAGE, ASK_CLIENT_VALUE,
+    ASK_CLIENT_DUE, ASK_CLIENT_SERVER, ASK_CLIENT_EXTRA, CONFIRM_CLIENT
+) = range(8)
 
 # --- Funções de banco de dados ---
 async def create_pool():
@@ -25,16 +29,56 @@ async def init_db(pool):
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT,
                 nome TEXT,
-                telefone TEXT
+                telefone TEXT,
+                pacote TEXT,
+                valor TEXT,
+                vencimento TEXT,
+                servidor TEXT,
+                outras_informacoes TEXT
             );
         """)
 
-async def add_cliente(pool, user_id, nome, telefone):
+async def add_cliente(pool, user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes):
     async with pool.acquire() as conn:
         await conn.execute(
-            "INSERT INTO clientes (user_id, nome, telefone) VALUES ($1, $2, $3)",
-            user_id, nome, telefone
+            """
+            INSERT INTO clientes (user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            """,
+            user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes
         )
+
+# --- Teclados ---
+package_keyboard = ReplyKeyboardMarkup(
+    [
+        ["📅 MENSAL", "📆 TRIMESTRAL"],
+        ["📅 SEMESTRAL", "📅 ANUAL"],
+        ["🛠️ PACOTE PERSONALIZADO"]
+    ],
+    resize_keyboard=True, one_time_keyboard=True
+)
+value_keyboard = ReplyKeyboardMarkup(
+    [
+        ["25", "30", "35", "40", "45"],
+        ["50", "60", "70", "90"],
+        ["💸 OUTRO VALOR"]
+    ],
+    resize_keyboard=True, one_time_keyboard=True
+)
+server_keyboard = ReplyKeyboardMarkup(
+    [
+        ["⚡ FAST PLAY", "🏅 GOLD PLAY", "📺 EITV"],
+        ["🖥️ X SERVER", "🛰️ UNITV", "🆙 UPPER PLAY"],
+        ["🪶 SLIM TV", "🛠️ CRAFT TV", "🖊️ OUTRO SERVIDOR"]
+    ],
+    resize_keyboard=True, one_time_keyboard=True
+)
+extra_keyboard = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("✅ Salvar"), KeyboardButton("❌ Cancelar")]
+    ],
+    resize_keyboard=True, is_persistent=True
+)
 
 # --- Handlers ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -47,24 +91,98 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "ADICIONAR CLIENTE":
-        await update.message.reply_text("Digite o nome do cliente:")
+        await update.message.reply_text("Digite o nome do cliente:", reply_markup=ReplyKeyboardRemove())
         return ASK_CLIENT_NAME
     return ConversationHandler.END
 
 async def ask_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["novo_cliente_nome"] = update.message.text
+    context.user_data["nome"] = update.message.text
     await update.message.reply_text("Agora envie o telefone do cliente:")
     return ASK_CLIENT_PHONE
 
 async def ask_client_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    nome = context.user_data["novo_cliente_nome"]
-    telefone = update.message.text
+    context.user_data["telefone"] = update.message.text
+    await update.message.reply_text("Escolha o pacote:", reply_markup=package_keyboard)
+    return ASK_CLIENT_PACKAGE
+
+async def ask_client_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["pacote"] = update.message.text
+    await update.message.reply_text("Escolha o valor:", reply_markup=value_keyboard)
+    return ASK_CLIENT_VALUE
+
+async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["valor"] = update.message.text
+    # Gera datas automáticas conforme o pacote
+    hoje = date.today()
+    pacote = context.user_data.get("pacote", "")
+    datas = {
+        "📅 MENSAL": hoje + timedelta(days=30),
+        "📆 TRIMESTRAL": hoje + timedelta(days=90),
+        "📅 SEMESTRAL": hoje + timedelta(days=180),
+        "📅 ANUAL": hoje + timedelta(days=365),
+    }
+    datas_keyboard = []
+    if pacote in datas:
+        datas_keyboard.append([datas[pacote].strftime("%d/%m/%Y")])
+    datas_keyboard.append(["📅 OUTRA DATA"])
+    await update.message.reply_text("Escolha a data de vencimento:", reply_markup=ReplyKeyboardMarkup(datas_keyboard, resize_keyboard=True, one_time_keyboard=True))
+    return ASK_CLIENT_DUE
+
+async def ask_client_due(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["vencimento"] = update.message.text
+    await update.message.reply_text("Escolha o servidor:", reply_markup=server_keyboard)
+    return ASK_CLIENT_SERVER
+
+async def ask_client_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["servidor"] = update.message.text
+    await update.message.reply_text(
+        "Se desejar, informe outras informações. Depois, clique em Salvar ou Cancelar:",
+        reply_markup=extra_keyboard
+    )
+    return ASK_CLIENT_EXTRA
+
+async def ask_client_extra(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    if text in ["✅ Salvar", "❌ Cancelar"]:
+        return await confirm_client(update, context)
+    context.user_data["outras_informacoes"] = text
+    await update.message.reply_text(
+        "Clique em ✅ Salvar para finalizar ou ❌ Cancelar para descartar.",
+        reply_markup=extra_keyboard
+    )
+    return ASK_CLIENT_EXTRA
+
+async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.message.text == "❌ Cancelar":
+        await update.message.reply_text("Cadastro cancelado.", reply_markup=ReplyKeyboardRemove())
+        return ConversationHandler.END
+
+    dados = context.user_data
     user_id = update.effective_user.id
+    # Garante que o campo outras_informacoes exista
+    outras_informacoes = dados.get("outras_informacoes", "")
+
     pool = context.application.bot_data["pool"]
-    await add_cliente(pool, user_id, nome, telefone)
-    await update.message.reply_text("Cliente adicionado com sucesso!")
+    await add_cliente(
+        pool, user_id, dados["nome"], dados["telefone"], dados["pacote"],
+        dados["valor"], dados["vencimento"], dados["servidor"], outras_informacoes
+    )
+
+    resumo = (
+        f"Confirme os dados do cliente:\n"
+        f"Nome: {dados.get('nome')}\n"
+        f"Telefone: {dados.get('telefone')}\n"
+        f"Pacote: {dados.get('pacote')}\n"
+        f"Valor: {dados.get('valor')}\n"
+        f"Vencimento: {dados.get('vencimento')}\n"
+        f"Servidor: {dados.get('servidor')}\n"
+        f"Outras informações: {outras_informacoes}\n"
+        "\nCliente adicionado com sucesso! ✅"
+    )
+    await update.message.reply_text(resumo, reply_markup=ReplyKeyboardRemove())
     return ConversationHandler.END
 
+# --- Main ---
 async def main():
     logging.basicConfig(level=logging.INFO)
     application = Application.builder().token(TOKEN).build()
@@ -80,6 +198,11 @@ async def main():
         states={
             ASK_CLIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_name)],
             ASK_CLIENT_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_phone)],
+            ASK_CLIENT_PACKAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_package)],
+            ASK_CLIENT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_value)],
+            ASK_CLIENT_DUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_due)],
+            ASK_CLIENT_SERVER: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_server)],
+            ASK_CLIENT_EXTRA: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_extra)],
         },
         fallbacks=[]
     )
