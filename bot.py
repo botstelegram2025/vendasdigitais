@@ -30,7 +30,7 @@ POSTGRES_URL = os.environ.get("POSTGRES_URL")
     ASK_CLIENT_DUE, ASK_CLIENT_SERVER, ASK_CLIENT_EXTRA,
     EDIT_FIELD, SEND_MESSAGE, RENEW_DATE,
     TEMPLATE_ACTION, TEMPLATE_NAME, TEMPLATE_CONTENT, TEMPLATE_EDIT,
-    PREVIEW_EDIT  # <--- novo estado para editar o texto da prévia
+    PREVIEW_EDIT
 ) = range(15)
 
 # ==============================
@@ -166,7 +166,6 @@ def aplicar_template(conteudo: str, cliente: dict) -> str:
     )
 
 async def enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
-    # Exemplo de job diário (troque por send_message real se desejar)
     pool = context.application.bot_data["pool"]
     async with pool.acquire() as conn:
         clientes = await conn.fetch("SELECT * FROM clientes")
@@ -181,7 +180,7 @@ async def enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
             if tpl:
                 msg = aplicar_template(tpl["conteudo"], c)
                 logging.info(f"[Aviso {dias}] Para {c['nome']}: {msg}")
-                # await context.bot.send_message(chat_id=<seu_chat_id>, text=msg)
+                # Ex.: await context.bot.send_message(chat_id=<seu_chat_id>, text=msg)
 
 # =========
 # Teclados
@@ -257,8 +256,6 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "LISTAR CLIENTES":
         await listar_clientes(update, context)
         return ConversationHandler.END
-    elif text == "GERENCIAR TEMPLATES":
-        return await templates_menu(update, context)
     return ConversationHandler.END
 
 async def ask_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -556,15 +553,17 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # =========
-# Renovar
+# Renovar (CORRIGIDO: padrões e ordem dos handlers)
 # =========
 async def renew(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
+    # callback_data chega como "renew_<id>"
     cid = int(q.data.replace("renew_", ""))
     kb = [
         [InlineKeyboardButton("🔄 Renovar mesmo ciclo", callback_data=f"renew_same_{cid}")],
-        [InlineKeyboardButton("📅 Escolher nova data", callback_data=f"renew_new_{cid}")]
+        [InlineKeyboardButton("📅 Escolher nova data", callback_data=f"renew_new_{cid}")],
+        [InlineKeyboardButton("⬅️ Voltar", callback_data=f"cliente_{cid}")]
     ]
     await q.edit_message_text("Escolha como renovar:", reply_markup=InlineKeyboardMarkup(kb))
 
@@ -711,7 +710,7 @@ async def preview_send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     cid = preview.get("cid")
     text = preview.get("text")
-    # Aqui você pode integrar com WhatsApp/Telegram do cliente. Por agora, enviamos no chat atual.
+    # Integração real (WhatsApp/Telegram cliente) pode ser feita aqui.
     await q.message.reply_text(f"📩 Mensagem enviada para cliente {cid}:\n\n{text}", reply_markup=menu_keyboard)
     context.user_data.pop("send_preview", None)
 
@@ -802,7 +801,8 @@ async def template_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     tid = int(q.data.replace("tpl_", ""))
     pool = context.application.bot_data["pool"]
-    tpl = await pool.fetchrow("SELECT * FROM templates WHERE id=$1", tid)
+    async with pool.acquire() as conn:
+        tpl = await conn.fetchrow("SELECT * FROM templates WHERE id=$1", tid)
     if tpl:
         detalhes = f"📝 <b>{tpl['nome']}</b>\n\n{tpl['conteudo']}"
         kb = [
@@ -887,7 +887,7 @@ async def main():
 
     # Conversa de RENOVAÇÃO (nova data)
     conv_renew = ConversationHandler(
-        entry_points=[CallbackQueryHandler(renew_new_handler, pattern=r"^renew_new_")],
+        entry_points=[CallbackQueryHandler(renew_new_handler, pattern=r"^renew_new_\d+$")],
         states={RENEW_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, renew_save_new_date)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar)],
         allow_reentry=True
@@ -926,20 +926,24 @@ async def main():
     # Listar clientes
     application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), listar_clientes))
 
-    # Callbacks de clientes e ações
-    application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_"))
-    application.add_handler(CallbackQueryHandler(edit_menu, pattern=r"^editmenu_"))
-    application.add_handler(CallbackQueryHandler(renew, pattern=r"^renew_"))
-    application.add_handler(CallbackQueryHandler(renew_same_handler, pattern=r"^renew_same_"))
-    application.add_handler(CallbackQueryHandler(delete_client, pattern=r"^delete_[0-9]+$"))
-    application.add_handler(CallbackQueryHandler(delete_yes, pattern=r"^delete_yes_"))
+    # Callbacks específicos de Renovar DEVEM vir antes do genérico
+    application.add_handler(CallbackQueryHandler(renew_same_handler, pattern=r"^renew_same_\d+$"))
+    # (renovar escolhendo nova data é conversa: conv_renew já está acima)
+
+    # Callbacks de clientes e demais ações
+    application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_\d+$"))
+    application.add_handler(CallbackQueryHandler(edit_menu, pattern=r"^editmenu_\d+$"))
+    application.add_handler(CallbackQueryHandler(delete_client, pattern=r"^delete_\d+$"))
+    application.add_handler(CallbackQueryHandler(delete_yes, pattern=r"^delete_yes_\d+$"))
     application.add_handler(CallbackQueryHandler(use_template_menu, pattern=r"^use_tpl_\d+$"))
     application.add_handler(CallbackQueryHandler(use_template_select, pattern=r"^use_tplsel_\d+_\d+$"))
 
-    # Callbacks do preview de envio (CORRIGIDO)
+    # Callback genérico do menu Renovar (após os específicos, padrão restrito)
+    application.add_handler(CallbackQueryHandler(renew, pattern=r"^renew_\d+$"))
+
+    # Callbacks do preview de envio
     application.add_handler(CallbackQueryHandler(preview_send_now, pattern=r"^send_now_\d+$"))
     application.add_handler(CallbackQueryHandler(preview_send_cancel, pattern=r"^cancel_send_\d+$"))
-    application.add_handler(CallbackQueryHandler(preview_edit_request, pattern=r"^edit_preview_\d+$"))
 
     # Scheduler de notificações (opcional)
     if APSCHED_AVAILABLE:
