@@ -109,6 +109,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "ADICIONAR CLIENTE":
+        # Limpa dados antigos do usuário para evitar conflito
+        context.user_data.clear()
         await update.message.reply_text("Digite o nome do cliente:", reply_markup=ReplyKeyboardRemove())
         return ASK_CLIENT_NAME
     elif text == "LISTAR CLIENTES":
@@ -157,48 +159,60 @@ async def ask_client_due(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ask_client_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["servidor"] = update.message.text
     await update.message.reply_text(
-        "Se desejar, informe outras informações. Depois, clique em Salvar ou Cancelar:",
+        "Se desejar, informe outras informações. Depois, clique em ✅ Salvar para finalizar ou ❌ Cancelar para descartar.",
         reply_markup=extra_keyboard
     )
+    # Inicializa campo para garantir chave mesmo se usuário apenas clicar salvar
+    context.user_data["outras_informacoes"] = ""
     return ASK_CLIENT_EXTRA
 
 async def ask_client_extra(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if text in ["✅ Salvar", "❌ Cancelar"]:
+    # Salvar cliente se usuário clicar em Salvar, cancelar se clicar em Cancelar
+    if text == "✅ Salvar":
         return await confirm_client(update, context)
-    context.user_data["outras_informacoes"] = text
-    await update.message.reply_text(
-        "Clique em ✅ Salvar para finalizar ou ❌ Cancelar para descartar.",
-        reply_markup=extra_keyboard
-    )
-    return ASK_CLIENT_EXTRA
+    elif text == "❌ Cancelar":
+        await update.message.reply_text("Cadastro cancelado.", reply_markup=menu_keyboard)
+        context.user_data.clear()
+        return ConversationHandler.END
+    else:
+        context.user_data["outras_informacoes"] = text
+        await update.message.reply_text(
+            "Clique em ✅ Salvar para finalizar ou ❌ Cancelar para descartar.",
+            reply_markup=extra_keyboard
+        )
+        return ASK_CLIENT_EXTRA
 
 async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.message.text == "❌ Cancelar":
-        await update.message.reply_text("Cadastro cancelado.", reply_markup=menu_keyboard)
-        return ConversationHandler.END
-
     dados = context.user_data
     user_id = update.effective_user.id
     outras_informacoes = dados.get("outras_informacoes", "")
     pool = context.application.bot_data["pool"]
+
+    # Garante que todos os campos obrigatórios existam
+    for campo in ["nome", "telefone", "pacote", "valor", "vencimento", "servidor"]:
+        if campo not in dados:
+            await update.message.reply_text(f"Erro: Campo obrigatório '{campo}' não preenchido.", reply_markup=menu_keyboard)
+            context.user_data.clear()
+            return ConversationHandler.END
+
     await add_cliente(
         pool, user_id, dados["nome"], dados["telefone"], dados["pacote"],
         dados["valor"], dados["vencimento"], dados["servidor"], outras_informacoes
     )
 
     resumo = (
-        f"Confirme os dados do cliente:\n"
-        f"Nome: {dados.get('nome')}\n"
-        f"Telefone: {dados.get('telefone')}\n"
-        f"Pacote: {dados.get('pacote')}\n"
-        f"Valor: {dados.get('valor')}\n"
-        f"Vencimento: {dados.get('vencimento')}\n"
-        f"Servidor: {dados.get('servidor')}\n"
-        f"Outras informações: {outras_informacoes}\n"
-        "\nCliente adicionado com sucesso! ✅"
+        f"Cliente cadastrado com sucesso! ✅\n"
+        f"<b>Nome:</b> {dados.get('nome')}\n"
+        f"<b>Telefone:</b> {dados.get('telefone')}\n"
+        f"<b>Pacote:</b> {dados.get('pacote')}\n"
+        f"<b>Valor:</b> {dados.get('valor')}\n"
+        f"<b>Vencimento:</b> {dados.get('vencimento')}\n"
+        f"<b>Servidor:</b> {dados.get('servidor')}\n"
+        f"<b>Outras informações:</b> {outras_informacoes or '-'}"
     )
-    await update.message.reply_text(resumo, reply_markup=menu_keyboard)
+    await update.message.reply_html(resumo, reply_markup=menu_keyboard)
+    context.user_data.clear()
     return ConversationHandler.END
 
 # --- Listar clientes e detalhes ---
