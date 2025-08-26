@@ -99,8 +99,16 @@ async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     sugestoes = []
     
     if "MENSAL" in pacote.upper():
-        prox_mes = hoje.replace(day=1) + timedelta(days=32)
-        prox_mes = prox_mes.replace(day=hoje.day)
+        # Calcular próximo mês mantendo o dia
+        try:
+            if hoje.month == 12:
+                prox_mes = hoje.replace(year=hoje.year + 1, month=1)
+            else:
+                prox_mes = hoje.replace(month=hoje.month + 1)
+        except ValueError:
+            # Caso o dia não exista no próximo mês (ex: 31 de janeiro -> 28 de fevereiro)
+            prox_mes = hoje.replace(day=28) + timedelta(days=32)
+            prox_mes = prox_mes.replace(day=min(hoje.day, 28))
         sugestoes.append(prox_mes.strftime("%d/%m/%Y"))
     elif "TRIMESTRAL" in pacote.upper():
         data_3_meses = hoje + timedelta(days=90)
@@ -112,11 +120,18 @@ async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data_1_ano = hoje + timedelta(days=365)
         sugestoes.append(data_1_ano.strftime("%d/%m/%Y"))
     
-    # Sempre adicionar próximo mês como opção
-    prox_mes = hoje.replace(day=1) + timedelta(days=32)
-    prox_mes = prox_mes.replace(day=hoje.day)
-    if prox_mes.strftime("%d/%m/%Y") not in sugestoes:
-        sugestoes.append(prox_mes.strftime("%d/%m/%Y"))
+    # Sempre adicionar próximo mês como opção adicional
+    try:
+        if hoje.month == 12:
+            prox_mes_extra = hoje.replace(year=hoje.year + 1, month=1)
+        else:
+            prox_mes_extra = hoje.replace(month=hoje.month + 1)
+    except ValueError:
+        prox_mes_extra = hoje.replace(day=28) + timedelta(days=32)
+        prox_mes_extra = prox_mes_extra.replace(day=min(hoje.day, 28))
+    
+    if prox_mes_extra.strftime("%d/%m/%Y") not in sugestoes:
+        sugestoes.append(prox_mes_extra.strftime("%d/%m/%Y"))
     
     keyboard = []
     for data in sugestoes[:2]:  # Máximo 2 sugestões
@@ -197,6 +212,21 @@ async def ask_client_other_info(update: Update, context: ContextTypes.DEFAULT_TY
     
     return ConversationHandler.END
 
+async def cancel_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the conversation"""
+    # Restaurar keyboard principal
+    keyboard = [
+        [KeyboardButton("➕ ADICIONAR CLIENTE")]
+    ]
+    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+    
+    await update.message.reply_text("❌ Operação cancelada.", reply_markup=markup)
+    
+    # Limpar dados do usuário
+    context.user_data.clear()
+    
+    return ConversationHandler.END
+
 async def main():
     logging.basicConfig(level=logging.INFO)
     application = Application.builder().token(TOKEN).build()
@@ -218,7 +248,7 @@ async def main():
             ASK_CLIENT_SERVER: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_server)],
             ASK_CLIENT_OTHER_INFO: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_other_info)],
         },
-        fallbacks=[]
+        fallbacks=[CommandHandler("cancel", cancel_conversation)]
     )
 
     application.add_handler(CommandHandler("start", start))
