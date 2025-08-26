@@ -722,9 +722,14 @@ async def use_template_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def use_template_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    _, cid_str, tid_str = q.data.split("_", 2)
+    # q.data formato: "use_tplsel_{cid}_{tid}"
+    data = q.data
+    prefix = "use_tplsel_"
+    rest = data[len(prefix):]
+    cid_str, tid_str = rest.split("_", 1)
     cid = int(cid_str)
     tid = int(tid_str)
+
     pool = context.application.bot_data["pool"]
     user_id = update.effective_user.id
 
@@ -945,7 +950,7 @@ async def main():
 
     # Conversa de RENOVAÇÃO (nova data)
     conv_renew = ConversationHandler(
-        entry_points=[CallbackQueryHandler(renew_new_handler, pattern=r"^renew_new_\d+$")],
+        entry_points=[CallbackQueryHandler(renew_new_handler, pattern=r"^renew_new_\\d+$")],
         states={RENEW_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, renew_save_new_date)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar)],
         allow_reentry=True
@@ -966,7 +971,7 @@ async def main():
 
     # Conversa para editar o texto da PRÉVIA
     conv_preview_edit = ConversationHandler(
-        entry_points=[CallbackQueryHandler(preview_edit_request, pattern=r"^edit_preview_\d+$")],
+        entry_points=[CallbackQueryHandler(preview_edit_request, pattern=r"^edit_preview_\\d+$")],
         states={PREVIEW_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, preview_edit_save)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar)],
         allow_reentry=True
@@ -985,22 +990,23 @@ async def main():
     application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), listar_clientes))
 
     # Callbacks específicos de Renovar DEVEM vir antes do genérico
-    application.add_handler(CallbackQueryHandler(renew_same_handler, pattern=r"^renew_same_\d+$"))
+    application.add_handler(CallbackQueryHandler(renew_same_handler, pattern=r"^renew_same_\\d+$"))
 
     # Callbacks de clientes e demais ações
-    application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_\d+$"))
-    application.add_handler(CallbackQueryHandler(edit_menu, pattern=r"^editmenu_\d+$"))
-    application.add_handler(CallbackQueryHandler(delete_client, pattern=r"^delete_\d+$"))
-    application.add_handler(CallbackQueryHandler(delete_yes, pattern=r"^delete_yes_\d+$"))
-    application.add_handler(CallbackQueryHandler(use_template_menu, pattern=r"^use_tpl_\d+$"))
-    application.add_handler(CallbackQueryHandler(use_template_select, pattern=r"^use_tplsel_\d+_\d+$"))
+    application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_\\d+$"))
+    application.add_handler(CallbackQueryHandler(edit_menu, pattern=r"^editmenu_\\d+$"))
+    application.add_handler(CallbackQueryHandler(delete_client, pattern=r"^delete_\\d+$"))
+    application.add_handler(CallbackQueryHandler(delete_yes, pattern=r"^delete_yes_\\d+$"))
+    application.add_handler(CallbackQueryHandler(use_template_menu, pattern=r"^use_tpl_\\d+$"))
+    application.add_handler(CallbackQueryHandler(use_template_select, pattern=r"^use_tplsel_\\d+_\\d+$"))
 
     # Callback genérico do menu Renovar (após os específicos, padrão restrito)
-    application.add_handler(CallbackQueryHandler(renew, pattern=r"^renew_\d+$"))
+    application.add_handler(CallbackQueryHandler(renew, pattern=r"^renew_\\d+$"))
 
-    # Callbacks do preview de envio
-    application.add_handler(CallbackQueryHandler(preview_send_now, pattern=r"^send_now_\d+$"))
-    application.add_handler(CallbackQueryHandler(preview_send_cancel, pattern=r"^cancel_send_\d+$"))
+    # --- Callbacks para CRUD de Templates (inline) ---
+    application.add_handler(CallbackQueryHandler(template_callback, pattern=r"^tpl_\\d+$"))
+    application.add_handler(CallbackQueryHandler(template_edit, pattern=r"^tpl_edit_\\d+$"))
+    application.add_handler(CallbackQueryHandler(template_delete, pattern=r"^tpl_del_\\d+$"))
 
     # Scheduler de notificações (opcional)
     if APSCHED_AVAILABLE:
