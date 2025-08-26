@@ -106,10 +106,9 @@ def parse_date(dtstr):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bem-vindo! Use o menu abaixo:", reply_markup=menu_keyboard)
 
-async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "ADICIONAR CLIENTE":
-        # Limpa dados antigos do usuário para evitar conflito
         context.user_data.clear()
         await update.message.reply_text("Digite o nome do cliente:", reply_markup=ReplyKeyboardRemove())
         return ASK_CLIENT_NAME
@@ -162,13 +161,11 @@ async def ask_client_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Se desejar, informe outras informações. Depois, clique em ✅ Salvar para finalizar ou ❌ Cancelar para descartar.",
         reply_markup=extra_keyboard
     )
-    # Inicializa campo para garantir chave mesmo se usuário apenas clicar salvar
     context.user_data["outras_informacoes"] = ""
     return ASK_CLIENT_EXTRA
 
 async def ask_client_extra(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    # Salvar cliente se usuário clicar em Salvar, cancelar se clicar em Cancelar
     if text == "✅ Salvar":
         return await confirm_client(update, context)
     elif text == "❌ Cancelar":
@@ -189,7 +186,6 @@ async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     outras_informacoes = dados.get("outras_informacoes", "")
     pool = context.application.bot_data["pool"]
 
-    # Garante que todos os campos obrigatórios existam
     for campo in ["nome", "telefone", "pacote", "valor", "vencimento", "servidor"]:
         if campo not in dados:
             await update.message.reply_text(f"Erro: Campo obrigatório '{campo}' não preenchido.", reply_markup=menu_keyboard)
@@ -249,7 +245,10 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton(label, callback_data=f"cliente_{r['id']}")])
 
     reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
-    await update.message.reply_html(resumo, reply_markup=reply_markup)
+
+    # Corrigido: usar effective_message para responder certo tanto pra /start quanto pra texto do menu
+    message = update.effective_message if hasattr(update, "effective_message") else update.message
+    await message.reply_html(resumo, reply_markup=reply_markup)
 
 async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -285,8 +284,8 @@ async def main():
     # Conversa para adicionar cliente
     conv_add_cliente = ConversationHandler(
         entry_points=[
-            MessageHandler(filters.Regex("^ADICIONAR CLIENTE$"), handle_menu),
-            MessageHandler(filters.Regex("^LISTAR CLIENTES$"), handle_menu)
+            MessageHandler(filters.Regex("^ADICIONAR CLIENTE$"), menu_handler),
+            MessageHandler(filters.Regex("^LISTAR CLIENTES$"), menu_handler)
         ],
         states={
             ASK_CLIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_name)],
