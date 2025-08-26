@@ -463,7 +463,8 @@ async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("✏️ Editar", callback_data=f"editmenu_{r['id']}")],
             [InlineKeyboardButton("🔄 Renovar", callback_data=f"renew_{r['id']}")],
             [InlineKeyboardButton("🗑️ Excluir", callback_data=f"delete_{r['id']}")],
-            [InlineKeyboardButton("📩 Enviar mensagem", callback_data=f"msg_{r['id']}")]
+            [InlineKeyboardButton("📩 Enviar mensagem", callback_data=f"msg_{r['id']}")],
+            [InlineKeyboardButton("📌 Usar template agora", callback_data=f"use_tpl_{r['id']}")]
         ]
         await q.edit_message_text(detalhes, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
@@ -643,10 +644,56 @@ async def msg_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_message_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.text
     cid = context.user_data.get("msg_cliente")
-    # Integração real pode ser plugada aqui (WhatsApp/Telegram para o cliente)
     await update.message.reply_text(f"📩 Mensagem enviada para cliente {cid}:\n\n{msg}", reply_markup=menu_keyboard)
     context.user_data.clear()
     return ConversationHandler.END
+
+# =========
+# USAR TEMPLATE AGORA (para 1 cliente)
+# =========
+async def use_template_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Abre a lista de templates para um cliente específico."""
+    q = update.callback_query
+    await q.answer()
+    cid = int(q.data.replace("use_tpl_", ""))
+    pool = context.application.bot_data["pool"]
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT id, nome FROM templates ORDER BY id")
+    if not rows:
+        await q.edit_message_text("⚠️ Nenhum template cadastrado. Use o menu GERENCIAR TEMPLATES para criar um.",)
+        return
+    buttons = []
+    for r in rows:
+        buttons.append([InlineKeyboardButton(r["nome"], callback_data=f"use_tplsel_{cid}_{r['id']}")])
+    buttons.append([InlineKeyboardButton("⬅️ Voltar", callback_data=f"cliente_{cid}")])
+    await q.edit_message_text("📌 Escolha um template para enviar agora:", reply_markup=InlineKeyboardMarkup(buttons))
+
+async def use_template_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Seleciona o template, aplica variáveis e envia a mensagem no chat."""
+    q = update.callback_query
+    await q.answer()
+    _, cid_str, tid_str = q.data.split("_", 2)
+    cid = int(cid_str)
+    tid = int(tid_str)
+    pool = context.application.bot_data["pool"]
+    user_id = update.effective_user.id
+
+    # Pega cliente e template
+    cliente = await get_cliente(pool, cid, user_id)
+    if not cliente:
+        await q.edit_message_text("Cliente não encontrado.")
+        return
+    async with pool.acquire() as conn:
+        tpl = await conn.fetchrow("SELECT * FROM templates WHERE id=$1", tid)
+    if not tpl:
+        await q.edit_message_text("Template não encontrado.")
+        return
+
+    # Aplica e envia
+    texto = aplicar_template(tpl["conteudo"], cliente)
+    await q.message.reply_text(f"📨 Mensagem gerada a partir de <b>{tpl['nome']}</b>:\n\n{texto}", parse_mode="HTML")
+    # Opcional: se quiser voltar ao menu do cliente depois:
+    await cliente_callback(update, context)
 
 # =========
 # Templates: CRUD via bot
@@ -663,7 +710,7 @@ async def templates_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def template_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     choice = update.message.text
     if choice == "➕ Adicionar Template":
-        await update.message.reply_text("Digite o nome do template (ex: aviso_-1, aviso_0, aviso_1):", reply_markup=cancel_keyboard)
+        await update.message.reply_text("Digite o nome do template (ex: aviso_-2, aviso_-1, aviso_0, aviso_1):", reply_markup=cancel_keyboard)
         return TEMPLATE_NAME
     elif choice == "📋 Listar Templates":
         pool = context.application.bot_data["pool"]
@@ -817,13 +864,15 @@ async def main():
     # Listar clientes
     application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), listar_clientes))
 
-    # Callbacks de clientes
+    # Callbacks de clientes (e menu de uso de template agora)
     application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_"))
     application.add_handler(CallbackQueryHandler(edit_menu, pattern=r"^editmenu_"))
     application.add_handler(CallbackQueryHandler(renew, pattern=r"^renew_"))
     application.add_handler(CallbackQueryHandler(renew_same_handler, pattern=r"^renew_same_"))
     application.add_handler(CallbackQueryHandler(delete_client, pattern=r"^delete_[0-9]+$"))
     application.add_handler(CallbackQueryHandler(delete_yes, pattern=r"^delete_yes_"))
+    application.add_handler(CallbackQueryHandler(use_template_menu, pattern=r"^use_tpl_\d+$"))
+    application.add_handler(CallbackQueryHandler(use_template_select, pattern=r"^use_tplsel_\d+_\d+$"))
 
     # Callbacks de templates
     application.add_handler(CallbackQueryHandler(template_callback, pattern=r"^tpl_\d+"))
