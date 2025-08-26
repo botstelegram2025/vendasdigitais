@@ -11,7 +11,7 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, CallbackQueryHandler
 )
 import asyncpg
-from datetime import date, timedelta, datetime
+from datetime import date, timedelta
 
 # --- Variáveis de ambiente ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -48,11 +48,8 @@ def parse_money(txt: str | None) -> Decimal:
     if not txt:
         return Decimal("0")
     s = txt.strip()
-    # remove tudo exceto dígitos, ponto e vírgula
     s = re.sub(r"[^0-9,\.]", "", s)
-    # se tem vírgula, troca por ponto (formato BR)
     if "," in s and "." in s:
-        # remove separadores de milhar
         s = s.replace(".", "")
     s = s.replace(",", ".")
     if s == "":
@@ -63,11 +60,9 @@ def parse_money(txt: str | None) -> Decimal:
         return Decimal("0")
 
 def fmt_money(val: Decimal) -> str:
-    """Formata Decimal em BR: R$ 1.234,56."""
+    """Formata Decimal em BR: 1.234,56 (sem R$)."""
     q = val.quantize(Decimal("0.01"))
-    # usa ponto para milhar e vírgula decimal
     inteiro, _, frac = f"{q:.2f}".partition(".")
-    # aplica milhar
     inteiro = f"{int(inteiro):,}".replace(",", ".")
     return f"{inteiro},{frac}"
 
@@ -75,7 +70,6 @@ def month_bounds(today: date | None = None):
     if not today:
         today = date.today()
     start = today.replace(day=1)
-    # próximo mês
     if start.month == 12:
         next_month_start = date(start.year + 1, 1, 1)
     else:
@@ -87,12 +81,11 @@ def month_bounds(today: date | None = None):
 # Banco de Dados
 # =================
 async def create_pool():
-    # se seu provedor exige SSL, garanta ?sslmode=require na URL
+    # Garanta que sua URL contenha ?sslmode=require se o provedor exigir
     return await asyncpg.create_pool(dsn=POSTGRES_URL)
 
 async def init_db(pool):
     async with pool.acquire() as conn:
-        # cria tabela base
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS clientes (
                 id SERIAL PRIMARY KEY,
@@ -106,7 +99,7 @@ async def init_db(pool):
                 outras_informacoes TEXT
             );
         """)
-        # adiciona colunas novas sem quebrar se já existirem
+        # migrações seguras (não quebram se já existirem)
         await conn.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS status_pagamento TEXT DEFAULT 'pendente';")
         await conn.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS data_pagamento TEXT;")
 
@@ -314,12 +307,14 @@ async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================
 async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pool = context.application.bot_data["pool"]
+    user_id = update.effective_user.id
     async with pool.acquire() as conn:
         rows = await conn.fetch("""
             SELECT id, nome, vencimento, valor, status_pagamento, data_pagamento
             FROM clientes
+            WHERE user_id = $1
             ORDER BY vencimento ASC NULLS LAST
-        """)
+        """, user_id)
 
     total = len(rows)
     hoje = date.today()
@@ -348,8 +343,9 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
             previsto_mes += v
 
         # recebido: status 'pago' e data_pagamento no mês corrente
-        if (r.get("status_pagamento") or "").lower() == "pago":
-            dp = parse_date(r.get("data_pagamento") or "")
+        status = (r["status_pagamento"] or "").lower()
+        if status == "pago":
+            dp = parse_date(r["data_pagamento"] or "")
             if dp and mes_ini <= dp <= mes_fim:
                 recebido_mes += v
 
@@ -364,21 +360,31 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "\nSelecione um cliente para ver detalhes:"
     )
 
+    # ----- Lista com EMOJIS de status -----
     buttons = []
     for r in rows:
         nome = r["nome"]
         venc = r["vencimento"]
+
         if not venc:
-            label = f"{nome} – sem vencimento"
+            label = f"⚪ {nome} – sem vencimento"
         else:
             vdt = parse_date(venc)
-            dias = (vdt - hoje).days if vdt else None
-            alerta = " ⚠️" if dias is not None and 0 <= dias <= 3 else ""
-            label = f"{nome} – {venc}{alerta}"
+            if vdt:
+                dias = (vdt - hoje).days
+                if dias < 0:
+                    status_emoji = "🔴"   # vencido
+                elif dias <= 5:
+                    status_emoji = "🟡"   # vence em até 5 dias
+                else:
+                    status_emoji = "🟢"   # em dia
+            else:
+                status_emoji = "⚪"
+            label = f"{status_emoji} {nome} – {venc}"
+
         buttons.append([InlineKeyboardButton(label, callback_data=f"cliente_{r['id']}")])
 
     reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
-    # usar effective_message para responder tanto a comando quanto a texto
     message = update.effective_message if hasattr(update, "effective_message") else update.message
     await message.reply_html(resumo, reply_markup=reply_markup)
 
@@ -387,8 +393,9 @@ async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     cliente_id = int(query.data.replace("cliente_", ""))
     pool = context.application.bot_data["pool"]
+    user_id = update.effective_user.id
     async with pool.acquire() as conn:
-        r = await conn.fetchrow("SELECT * FROM clientes WHERE id = $1", cliente_id)
+        r = await conn.fetchrow("SELECT * FROM clientes WHERE id = $1 AND user_id = $2", cliente_id, user_id)
     if r:
         detalhes = (
             f"<b>ID:</b> {r['id']}\n"
@@ -398,8 +405,8 @@ async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<b>Valor:</b> {r['valor']}\n"
             f"<b>Vencimento:</b> {r['vencimento']}\n"
             f"<b>Servidor:</b> {r['servidor']}\n"
-            f"<b>Status:</b> {r.get('status_pagamento', 'pendente')}\n"
-            f"<b>Pago em:</b> {r.get('data_pagamento') or '-'}\n"
+            f"<b>Status:</b> {r['status_pagamento']}\n"
+            f"<b>Pago em:</b> {r['data_pagamento'] or '-'}\n"
             f"<b>Outras informações:</b> {r['outras_informacoes'] or '-'}"
         )
         await query.edit_message_text(detalhes, parse_mode="HTML")
