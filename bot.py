@@ -70,8 +70,8 @@ package_keyboard = ReplyKeyboardMarkup(
 )
 value_keyboard = ReplyKeyboardMarkup(
     [
-        ["25", "30", "35", "40", "45"],
-        ["50", "60", "70", "90"],
+        ["💸25", "💸30", "💸35", "💸40", "💸45"],
+        ["💸50", "💸60", "💸70", "💸90"],
         ["💸 OUTRO VALOR"]
     ],
     resize_keyboard=True, one_time_keyboard=True
