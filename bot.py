@@ -115,40 +115,6 @@ menu_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-package_keyboard = ReplyKeyboardMarkup(
-    [
-        ["📅 MENSAL", "📆 TRIMESTRAL"],
-        ["📅 SEMESTRAL", "📅 ANUAL"],
-        ["🛠️ PACOTE PERSONALIZADO"]
-    ],
-    resize_keyboard=True, one_time_keyboard=True
-)
-
-value_keyboard = ReplyKeyboardMarkup(
-    [
-        ["25", "30", "35", "40", "45"],
-        ["50", "60", "70", "90"],
-        ["💸 OUTRO VALOR"]
-    ],
-    resize_keyboard=True, one_time_keyboard=True
-)
-
-server_keyboard = ReplyKeyboardMarkup(
-    [
-        ["⚡ FAST PLAY", "🏅 GOLD PLAY", "📺 EITV"],
-        ["🖥️ X SERVER", "🛰️ UNITV", "🆙 UPPER PLAY"],
-        ["🪶 SLIM TV", "🛠️ CRAFT TV", "🖊️ OUTRO SERVIDOR"]
-    ],
-    resize_keyboard=True, one_time_keyboard=True
-)
-
-extra_keyboard = ReplyKeyboardMarkup(
-    [
-        [KeyboardButton("✅ Salvar"), KeyboardButton("❌ Cancelar")]
-    ],
-    resize_keyboard=True, is_persistent=True
-)
-
 # =========
 # Listar clientes com dashboard
 # =========
@@ -190,11 +156,11 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if vdt:
                 dias = (vdt - hoje).days
                 if dias < 0:
-                    status_emoji = "🔴"   # vencido
+                    status_emoji = "🔴"
                 elif dias <= 5:
-                    status_emoji = "🟡"   # vencendo logo
+                    status_emoji = "🟡"
                 else:
-                    status_emoji = "🟢"   # em dia
+                    status_emoji = "🟢"
             else:
                 status_emoji = "⚪"
             label = f"{status_emoji} {nome} – {venc}"
@@ -208,13 +174,13 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # Menu de ações do cliente
 # =========
 async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    cliente_id = int(query.data.replace("cliente_", ""))
+    q = update.callback_query
+    await q.answer()
+    cid = int(q.data.replace("cliente_", ""))
     pool = context.application.bot_data["pool"]
     user_id = update.effective_user.id
     async with pool.acquire() as conn:
-        r = await conn.fetchrow("SELECT * FROM clientes WHERE id=$1 AND user_id=$2", cliente_id, user_id)
+        r = await conn.fetchrow("SELECT * FROM clientes WHERE id=$1 AND user_id=$2", cid, user_id)
     if r:
         detalhes = (
             f"<b>ID:</b> {r['id']}\n"
@@ -228,18 +194,101 @@ async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<b>Pago em:</b> {r['data_pagamento'] or '-'}\n"
             f"<b>Outras informações:</b> {r['outras_informacoes'] or '-'}"
         )
-        keyboard = [
+        kb = [
             [InlineKeyboardButton("✏️ Editar", callback_data=f"editmenu_{r['id']}")],
             [InlineKeyboardButton("🔄 Renovar", callback_data=f"renew_{r['id']}")],
             [InlineKeyboardButton("🗑️ Excluir", callback_data=f"delete_{r['id']}")],
             [InlineKeyboardButton("📩 Enviar mensagem", callback_data=f"msg_{r['id']}")]
         ]
-        await query.edit_message_text(detalhes, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
+        await q.edit_message_text(detalhes, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
 # =========
-# Editar / Renovar / Excluir / Mensagem (iguais aos anteriores que já te enviei)
+# Editar
 # =========
-# ... (para não repetir, mantemos os mesmos handlers edit_menu, edit_field, save_edit, renew, delete_client, delete_yes, msg_client, send_message_done)
+async def edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    cid = int(q.data.replace("editmenu_", ""))
+    fields = [
+        ("Nome", "nome"), ("Telefone", "telefone"), ("Pacote", "pacote"),
+        ("Valor", "valor"), ("Vencimento", "vencimento"),
+        ("Servidor", "servidor"), ("Outras informações", "outras_informacoes")
+    ]
+    kb = [[InlineKeyboardButton(f, callback_data=f"editfield_{cid}_{c}")] for f, c in fields]
+    await q.edit_message_text("Escolha o campo que deseja editar:", reply_markup=InlineKeyboardMarkup(kb))
+
+async def edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    _, cid, campo = q.data.split("_", 2)
+    context.user_data["edit_cliente"] = int(cid)
+    context.user_data["edit_campo"] = campo
+    await q.message.reply_text(f"Digite o novo valor para {campo}:")
+    return EDIT_FIELD
+
+async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    novo_valor = update.message.text
+    cid = context.user_data.get("edit_cliente")
+    campo = context.user_data.get("edit_campo")
+    pool = context.application.bot_data["pool"]
+    async with pool.acquire() as conn:
+        await conn.execute(f"UPDATE clientes SET {campo}=$1 WHERE id=$2", novo_valor, cid)
+    await update.message.reply_text(f"✅ {campo} atualizado com sucesso.", reply_markup=menu_keyboard)
+    context.user_data.clear()
+    return ConversationHandler.END
+
+# =========
+# Renovar
+# =========
+async def renew(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    cid = int(q.data.replace("renew_", ""))
+    kb = [
+        [InlineKeyboardButton("🔄 Renovar mesmo ciclo", callback_data=f"renew_same_{cid}")],
+        [InlineKeyboardButton("📅 Escolher nova data", callback_data=f"renew_new_{cid}")]
+    ]
+    await q.edit_message_text("Escolha como renovar:", reply_markup=InlineKeyboardMarkup(kb))
+
+# =========
+# Excluir
+# =========
+async def delete_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    cid = int(q.data.replace("delete_", ""))
+    kb = [
+        [InlineKeyboardButton("✅ Sim, excluir", callback_data=f"delete_yes_{cid}")],
+        [InlineKeyboardButton("❌ Cancelar", callback_data=f"cliente_{cid}")]
+    ]
+    await q.edit_message_text("Tem certeza que deseja excluir?", reply_markup=InlineKeyboardMarkup(kb))
+
+async def delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    cid = int(q.data.replace("delete_yes_", ""))
+    pool = context.application.bot_data["pool"]
+    async with pool.acquire() as conn:
+        await conn.execute("DELETE FROM clientes WHERE id=$1", cid)
+    await q.edit_message_text("✅ Cliente excluído com sucesso.")
+
+# =========
+# Enviar mensagem
+# =========
+async def msg_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    cid = int(q.data.replace("msg_", ""))
+    context.user_data["msg_cliente"] = cid
+    await q.message.reply_text("Digite a mensagem para enviar ao cliente:")
+    return SEND_MESSAGE
+
+async def send_message_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message.text
+    cid = context.user_data.get("msg_cliente")
+    await update.message.reply_text(f"📩 Mensagem enviada para cliente {cid}:\n\n{msg}")
+    context.user_data.clear()
+    return ConversationHandler.END
 
 # =========
 # Main
@@ -265,8 +314,6 @@ async def main():
     application.add_handler(CommandHandler("start", listar_clientes))
     application.add_handler(conv_edit)
     application.add_handler(conv_msg)
-
-    # menus principais
     application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), listar_clientes))
     application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_"))
     application.add_handler(CallbackQueryHandler(edit_menu, pattern=r"^editmenu_"))
