@@ -70,8 +70,8 @@ package_keyboard = ReplyKeyboardMarkup(
 )
 value_keyboard = ReplyKeyboardMarkup(
     [
-        ["💸25", "💸30", "💸35", "💸40", "💸45"],
-        ["💸50", "💸60", "💸70", "💸90"],
+        ["25", "30", "35", "40", "45"],
+        ["50", "60", "70", "90"],
         ["💸 OUTRO VALOR"]
     ],
     resize_keyboard=True, one_time_keyboard=True
@@ -145,27 +145,41 @@ async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "📅 SEMESTRAL": hoje + timedelta(days=180),
         "📅 ANUAL": hoje + timedelta(days=365),
     }
-    datas_keyboard = []
+
+    sugestoes = []
     if pacote in datas:
-        datas_keyboard.append([datas[pacote].strftime("%d/%m/%Y")])
-    datas_keyboard.append(["📅 OUTRA DATA"])
-    await update.message.reply_text("Escolha a data de vencimento:", 
-                                    reply_markup=ReplyKeyboardMarkup(datas_keyboard, resize_keyboard=True, one_time_keyboard=True))
+        sugestoes.append([datas[pacote].strftime("%d/%m/%Y")])
+    sugestoes.append(["📅 OUTRA DATA"])
+
+    await update.message.reply_text(
+        "Escolha a data de vencimento ou digite manualmente:",
+        reply_markup=ReplyKeyboardMarkup(sugestoes, resize_keyboard=True, one_time_keyboard=True)
+    )
     return ASK_CLIENT_DUE
 
 async def ask_client_due(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["vencimento"] = update.message.text
-    await update.message.reply_text("Escolha o servidor:", reply_markup=server_keyboard)
-    return ASK_CLIENT_SERVER
+    texto = update.message.text
+    if texto == "📅 OUTRA DATA":
+        await update.message.reply_text("Digite a data de vencimento no formato DD/MM/AAAA:")
+        return ASK_CLIENT_DUE  # permanece no mesmo estado até digitar
+    else:
+        context.user_data["vencimento"] = texto
+        await update.message.reply_text("Escolha o servidor:", reply_markup=server_keyboard)
+        return ASK_CLIENT_SERVER
 
 async def ask_client_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["servidor"] = update.message.text
-    await update.message.reply_text(
-        "Se desejar, informe outras informações. Depois, clique em ✅ Salvar para finalizar ou ❌ Cancelar para descartar.",
-        reply_markup=extra_keyboard
-    )
-    context.user_data["outras_informacoes"] = ""
-    return ASK_CLIENT_EXTRA
+    texto = update.message.text
+    if texto == "🖊️ OUTRO SERVIDOR":
+        await update.message.reply_text("Digite o nome do servidor:")
+        return ASK_CLIENT_SERVER  # permanece no mesmo estado até digitar
+    else:
+        context.user_data["servidor"] = texto
+        await update.message.reply_text(
+            "Se desejar, informe outras informações. Depois, clique em ✅ Salvar para finalizar ou ❌ Cancelar para descartar.",
+            reply_markup=extra_keyboard
+        )
+        context.user_data["outras_informacoes"] = ""
+        return ASK_CLIENT_EXTRA
 
 async def ask_client_extra(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
