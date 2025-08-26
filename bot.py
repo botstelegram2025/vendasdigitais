@@ -936,9 +936,10 @@ async def main():
     application.add_handler(CallbackQueryHandler(use_template_menu, pattern=r"^use_tpl_\d+$"))
     application.add_handler(CallbackQueryHandler(use_template_select, pattern=r"^use_tplsel_\d+_\d+$"))
 
-    # Callbacks do preview de envio
+    # Callbacks do preview de envio (CORRIGIDO)
     application.add_handler(CallbackQueryHandler(preview_send_now, pattern=r"^send_now_\d+$"))
     application.add_handler(CallbackQueryHandler(preview_send_cancel, pattern=r"^cancel_send_\d+$"))
+    application.add_handler(CallbackQueryHandler(preview_edit_request, pattern=r"^edit_preview_\d+$"))
 
     # Scheduler de notificações (opcional)
     if APSCHED_AVAILABLE:
