@@ -304,7 +304,7 @@ async def main():
     application.bot_data["pool"] = pool
 
     conv_add = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^(ADICIONAR CLIENTE|LISTAR CLIENTES)$"), menu_handler)],
+        entry_points=[MessageHandler(filters.Regex("^(ADICIONAR CLIENTE|LISTAR CLIENTES|AJUDA)$"), menu_handler)],
         states={
             ASK_CLIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_name)],
             ASK_CLIENT_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_phone)],
