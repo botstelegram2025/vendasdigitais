@@ -148,6 +148,54 @@ async def get_template(pool, nome: str):
     async with pool.acquire() as conn:
         return await conn.fetchrow("SELECT conteudo FROM templates WHERE nome=$1", nome)
 
+async def ensure_default_templates(pool):
+    """Cria templates padrão para avisos de vencimento (-2, -1, 0, +1) se não existirem."""
+    defaults = {
+        "aviso_-2": (
+            "Olá {nome}! 👋\n"
+            "Seu pacote {pacote} vence em {dias_restantes} dias (vencimento: {vencimento}).\n"
+            "Valor: R$ {valor}. Qualquer dúvida, estou à disposição."
+        ),
+        "aviso_-1": (
+            "Oi {nome}! ⚠️\n"
+            "Seu {pacote} vence amanhã ({vencimento}). Valor: R$ {valor}.\n"
+            "Se precisar, posso enviar o link de pagamento."
+        ),
+        "aviso_0": (
+            "{nome}, hoje é o vencimento do seu {pacote} (📅 {vencimento}).\n"
+            "Valor: R$ {valor}. Me avise se quiser renovar agora 😉"
+        ),
+        "aviso_1": (
+            "Olá {nome}! 📌\n"
+            "Percebemos que seu {pacote} venceu ontem ({vencimento}).\n"
+            "Valor: R$ {valor}. Posso te ajudar a regularizar/renovar?"
+        ),
+    }
+    async with pool.acquire() as conn:
+        for nome, conteudo in defaults.items():
+            await conn.execute(
+                """
+                INSERT INTO templates (nome, conteudo)
+                VALUES ($1,$2)
+                ON CONFLICT (nome) DO NOTHING
+                """,
+                nome, conteudo
+            )
+
+def variables_help_text() -> str:
+    return (
+        "📎 <b>Variáveis disponíveis</b>\n"
+        "• {nome}\n"
+        "• {telefone}\n"
+        "• {pacote}\n"
+        "• {valor}\n"
+        "• {vencimento}\n"
+        "• {servidor}\n"
+        "• {dias_restantes}\n\n"
+        "Exemplo:\n"
+        "Olá {nome}, seu {pacote} vence em {dias_restantes} dias (\"{vencimento}\"). Valor: R$ {valor}."
+    )
+
 # =================
 # Templates (helper)
 # =================
@@ -256,6 +304,8 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "LISTAR CLIENTES":
         await listar_clientes(update, context)
         return ConversationHandler.END
+    elif text == "GERENCIAR TEMPLATES":
+        return await templates_menu(update, context)
     return ConversationHandler.END
 
 async def ask_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -553,12 +603,11 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # =========
-# Renovar (CORRIGIDO: padrões e ordem dos handlers)
+# Renovar (padrões corretos)
 # =========
 async def renew(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    # callback_data chega como "renew_<id>"
     cid = int(q.data.replace("renew_", ""))
     kb = [
         [InlineKeyboardButton("🔄 Renovar mesmo ciclo", callback_data=f"renew_same_{cid}")],
@@ -751,6 +800,7 @@ async def templates_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
         [KeyboardButton("➕ Adicionar Template")],
         [KeyboardButton("📋 Listar Templates")],
+        [KeyboardButton("📎 Ver variáveis")],
         [KeyboardButton("❌ Cancelar / Menu Principal")]
     ]
     await update.message.reply_text("📂 Menu de Templates:", reply_markup=ReplyKeyboardMarkup(kb, resize_keyboard=True))
@@ -759,6 +809,7 @@ async def templates_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def template_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     choice = update.message.text
     if choice == "➕ Adicionar Template":
+        await update.message.reply_html(variables_help_text())
         await update.message.reply_text("Digite o nome do template (ex: aviso_-2, aviso_-1, aviso_0, aviso_1):", reply_markup=cancel_keyboard)
         return TEMPLATE_NAME
     elif choice == "📋 Listar Templates":
@@ -771,14 +822,18 @@ async def template_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons = [[InlineKeyboardButton(f"{r['nome']}", callback_data=f"tpl_{r['id']}")] for r in rows]
         await update.message.reply_text("Templates cadastrados:", reply_markup=InlineKeyboardMarkup(buttons))
         return ConversationHandler.END
+    elif choice == "📎 Ver variáveis":
+        await update.message.reply_html(variables_help_text())
+        return TEMPLATE_ACTION
     elif choice.startswith("❌"):
         return await cancelar(update, context)
     return TEMPLATE_ACTION
 
 async def template_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["tpl_nome"] = update.message.text.strip()
+    await update.message.reply_html(variables_help_text())
     await update.message.reply_text(
-        "Digite o conteúdo do template (use variáveis {nome}, {dias_restantes}, {pacote}, {valor}, {vencimento}, {servidor}):",
+        "Digite o conteúdo do template (use variáveis listadas acima):",
         reply_markup=cancel_keyboard
     )
     return TEMPLATE_CONTENT
@@ -816,6 +871,7 @@ async def template_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     tid = int(q.data.replace("tpl_edit_", ""))
     context.user_data["tpl_edit_id"] = tid
+    await q.message.reply_html(variables_help_text())
     await q.message.reply_text("Digite o novo conteúdo do template:", reply_markup=cancel_keyboard)
     return TEMPLATE_EDIT
 
@@ -851,6 +907,8 @@ async def main():
     application = Application.builder().token(TOKEN).build()
     pool = await create_pool()
     await init_db(pool)
+    # cria templates padrão (-2, -1, 0, +1) se não existirem
+    await ensure_default_templates(pool)
     application.bot_data["pool"] = pool
 
     # Conversa de CADASTRO
@@ -928,7 +986,6 @@ async def main():
 
     # Callbacks específicos de Renovar DEVEM vir antes do genérico
     application.add_handler(CallbackQueryHandler(renew_same_handler, pattern=r"^renew_same_\d+$"))
-    # (renovar escolhendo nova data é conversa: conv_renew já está acima)
 
     # Callbacks de clientes e demais ações
     application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_\d+$"))
