@@ -286,6 +286,9 @@ async def template_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # =========
 # Main
 # =========
+# =========
+# Main
+# =========
 async def main():
     logging.basicConfig(level=logging.INFO)
     if not TOKEN or not POSTGRES_URL:
@@ -301,11 +304,9 @@ async def main():
     scheduler.add_job(enviar_notificacoes, "cron", hour=9, args=[application])
     scheduler.start()
 
-    # Conversa templates
+    # Conversa de TEMPLATES
     conv_templates = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^GERENCIAR TEMPLATES$"), templates_menu)],
-        entry_points=[MessageHandler(filters.Regex("^LISTAR CLIENTES$"), templates_menu)],
-        entry_points=[MessageHandler(filters.Regex("^ADICIONAR CLIENTE$"), templates_menu)],
         states={
             TEMPLATE_ACTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, template_action)],
             TEMPLATE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, template_name)],
@@ -315,10 +316,22 @@ async def main():
         fallbacks=[MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar)]
     )
 
+    # Conversa de ADICIONAR CLIENTE
+    conv_add_client = ConversationHandler(
+        entry_points=[MessageHandler(filters.Regex("^ADICIONAR CLIENTE$"), lambda u, c: u.message.reply_text("⚠️ fluxo de cadastro ainda não implementado aqui"))],
+        states={},
+        fallbacks=[MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar)]
+    )
+
+    # Handlers principais
     application.add_handler(CommandHandler("start", lambda u, c: u.message.reply_text("Bem-vindo!", reply_markup=menu_keyboard)))
     application.add_handler(conv_templates)
+    application.add_handler(conv_add_client)
 
-    # Callbacks templates
+    # Botão LISTAR CLIENTES (aqui você chamaria sua função listar_clientes real)
+    application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), lambda u, c: u.message.reply_text("📋 Aqui vai a listagem de clientes")))
+
+    # Callbacks de templates
     application.add_handler(CallbackQueryHandler(template_callback, pattern=r"^tpl_\d+"))
     application.add_handler(CallbackQueryHandler(template_edit, pattern=r"^tpl_edit_\d+"))
     application.add_handler(CallbackQueryHandler(template_delete, pattern=r"^tpl_del_\d+"))
