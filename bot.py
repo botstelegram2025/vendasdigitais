@@ -1,5 +1,7 @@
 import logging
 import os
+import re
+from decimal import Decimal, InvalidOperation
 from telegram import (
     Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
     InlineKeyboardButton, InlineKeyboardMarkup
@@ -9,7 +11,7 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, CallbackQueryHandler
 )
 import asyncpg
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime
 
 # --- Variáveis de ambiente ---
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -21,12 +23,76 @@ POSTGRES_URL = os.environ.get("POSTGRES_URL")
     ASK_CLIENT_DUE, ASK_CLIENT_SERVER, ASK_CLIENT_EXTRA
 ) = range(7)
 
-# --- Banco de dados ---
+# ==============================
+# Utilitários de Data e Dinheiro
+# ==============================
+def parse_date(dtstr: str | None):
+    """Aceita 'YYYY-MM-DD' ou 'DD/MM/YYYY' e retorna date, senão None."""
+    if not dtstr:
+        return None
+    dtstr = dtstr.strip()
+    # tenta ISO
+    try:
+        return date.fromisoformat(dtstr)
+    except Exception:
+        pass
+    # tenta BR
+    try:
+        d, m, y = map(int, dtstr.split("/"))
+        return date(y, m, d)
+    except Exception:
+        return None
+
+def parse_money(txt: str | None) -> Decimal:
+    """Converte '50', '50,00', 'R$ 1.234,56' etc. para Decimal(1234.56)."""
+    if not txt:
+        return Decimal("0")
+    s = txt.strip()
+    # remove tudo exceto dígitos, ponto e vírgula
+    s = re.sub(r"[^0-9,\.]", "", s)
+    # se tem vírgula, troca por ponto (formato BR)
+    if "," in s and "." in s:
+        # remove separadores de milhar
+        s = s.replace(".", "")
+    s = s.replace(",", ".")
+    if s == "":
+        return Decimal("0")
+    try:
+        return Decimal(s)
+    except InvalidOperation:
+        return Decimal("0")
+
+def fmt_money(val: Decimal) -> str:
+    """Formata Decimal em BR: R$ 1.234,56."""
+    q = val.quantize(Decimal("0.01"))
+    # usa ponto para milhar e vírgula decimal
+    inteiro, _, frac = f"{q:.2f}".partition(".")
+    # aplica milhar
+    inteiro = f"{int(inteiro):,}".replace(",", ".")
+    return f"{inteiro},{frac}"
+
+def month_bounds(today: date | None = None):
+    if not today:
+        today = date.today()
+    start = today.replace(day=1)
+    # próximo mês
+    if start.month == 12:
+        next_month_start = date(start.year + 1, 1, 1)
+    else:
+        next_month_start = date(start.year, start.month + 1, 1)
+    end = next_month_start - timedelta(days=1)
+    return start, end
+
+# =================
+# Banco de Dados
+# =================
 async def create_pool():
+    # se seu provedor exige SSL, garanta ?sslmode=require na URL
     return await asyncpg.create_pool(dsn=POSTGRES_URL)
 
 async def init_db(pool):
     async with pool.acquire() as conn:
+        # cria tabela base
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS clientes (
                 id SERIAL PRIMARY KEY,
@@ -40,13 +106,17 @@ async def init_db(pool):
                 outras_informacoes TEXT
             );
         """)
+        # adiciona colunas novas sem quebrar se já existirem
+        await conn.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS status_pagamento TEXT DEFAULT 'pendente';")
+        await conn.execute("ALTER TABLE clientes ADD COLUMN IF NOT EXISTS data_pagamento TEXT;")
 
 async def add_cliente(pool, user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes):
     async with pool.acquire() as conn:
         try:
             cliente_id = await conn.fetchval(
                 """
-                INSERT INTO clientes (user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes)
+                INSERT INTO clientes 
+                    (user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 RETURNING id
                 """,
@@ -55,10 +125,12 @@ async def add_cliente(pool, user_id, nome, telefone, pacote, valor, vencimento, 
             logging.info(f"Cliente salvo com ID {cliente_id}")
             return cliente_id
         except Exception as e:
-            logging.error(f"Erro ao salvar cliente: {e}")
+            logging.exception(f"Erro ao salvar cliente: {e}")
             return None
 
-# --- Teclados ---
+# =========
+# Teclados
+# =========
 menu_keyboard = ReplyKeyboardMarkup(
     [
         [KeyboardButton("ADICIONAR CLIENTE")],
@@ -98,20 +170,9 @@ extra_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True, is_persistent=True
 )
 
-# --- Utilitário para parse de data ---
-def parse_date(dtstr):
-    if not dtstr:
-        return None
-    try:
-        return date.fromisoformat(dtstr)
-    except:
-        try:
-            d, m, y = map(int, dtstr.split("/"))
-            return date(y, m, d)
-        except:
-            return None
-
-# --- Handlers principais ---
+# =========
+# Handlers
+# =========
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bem-vindo! Use o menu abaixo:", reply_markup=menu_keyboard)
 
@@ -141,7 +202,7 @@ async def ask_client_package(update: Update, context: ContextTypes.DEFAULT_TYPE)
     texto = update.message.text
     if texto == "🛠️ PACOTE PERSONALIZADO":
         await update.message.reply_text("Digite o nome do pacote personalizado:")
-        return ASK_CLIENT_PACKAGE
+        return ASK_CLIENT_PACKAGE  # continua até digitar
     else:
         context.user_data["pacote"] = texto
         await update.message.reply_text("Escolha o valor:", reply_markup=value_keyboard)
@@ -150,8 +211,8 @@ async def ask_client_package(update: Update, context: ContextTypes.DEFAULT_TYPE)
 async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text
     if texto == "💸 OUTRO VALOR":
-        await update.message.reply_text("Digite o valor do pacote (apenas números):")
-        return ASK_CLIENT_VALUE
+        await update.message.reply_text("Digite o valor do pacote (use números, ex: 50 ou 50,00):")
+        return ASK_CLIENT_VALUE  # continua até digitar
     else:
         context.user_data["valor"] = texto
         hoje = date.today()
@@ -248,17 +309,49 @@ async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     return ConversationHandler.END
 
-# --- Listar clientes e detalhes ---
+# ==========================
+# Listagem + Dashboard resumo
+# ==========================
 async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pool = context.application.bot_data["pool"]
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT id, nome, vencimento FROM clientes ORDER BY vencimento ASC NULLS LAST")
+        rows = await conn.fetch("""
+            SELECT id, nome, vencimento, valor, status_pagamento, data_pagamento
+            FROM clientes
+            ORDER BY vencimento ASC NULLS LAST
+        """)
 
     total = len(rows)
     hoje = date.today()
     vencem_hoje = sum(1 for r in rows if r["vencimento"] and parse_date(r["vencimento"]) == hoje)
-    vencem_3dias = sum(1 for r in rows if r["vencimento"] and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 3)
-    vencem_7dias = sum(1 for r in rows if r["vencimento"] and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 7)
+    vencem_3dias = sum(
+        1 for r in rows
+        if r["vencimento"] and parse_date(r["vencimento"]) is not None
+        and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 3
+    )
+    vencem_7dias = sum(
+        1 for r in rows
+        if r["vencimento"] and parse_date(r["vencimento"]) is not None
+        and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 7
+    )
+
+    # --- métricas financeiras do mês ---
+    mes_ini, mes_fim = month_bounds(hoje)
+    recebido_mes = Decimal("0")
+    previsto_mes = Decimal("0")
+
+    for r in rows:
+        v = parse_money(r["valor"])
+        # previsto: qualquer cliente com vencimento dentro do mês corrente
+        vcto = parse_date(r["vencimento"]) if r["vencimento"] else None
+        if vcto and mes_ini <= vcto <= mes_fim:
+            previsto_mes += v
+
+        # recebido: status 'pago' e data_pagamento no mês corrente
+        if (r.get("status_pagamento") or "").lower() == "pago":
+            dp = parse_date(r.get("data_pagamento") or "")
+            if dp and mes_ini <= dp <= mes_fim:
+                recebido_mes += v
 
     resumo = (
         f"📋 <b>Resumo dos clientes</b>\n"
@@ -266,6 +359,8 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Vencem hoje: <b>{vencem_hoje}</b>\n"
         f"Vencem em até 3 dias: <b>{vencem_3dias}</b>\n"
         f"Vencem em até 7 dias: <b>{vencem_7dias}</b>\n"
+        f"\n💰 <b>Recebido no mês:</b> <b>R$ {fmt_money(recebido_mes)}</b>"
+        f"\n📆 <b>Previsto no mês:</b> <b>R$ {fmt_money(previsto_mes)}</b>\n"
         "\nSelecione um cliente para ver detalhes:"
     )
 
@@ -276,13 +371,16 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not venc:
             label = f"{nome} – sem vencimento"
         else:
-            dias = (parse_date(venc) - hoje).days if parse_date(venc) else None
+            vdt = parse_date(venc)
+            dias = (vdt - hoje).days if vdt else None
             alerta = " ⚠️" if dias is not None and 0 <= dias <= 3 else ""
             label = f"{nome} – {venc}{alerta}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"cliente_{r['id']}")])
 
     reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
-    await update.message.reply_html(resumo, reply_markup=reply_markup)
+    # usar effective_message para responder tanto a comando quanto a texto
+    message = update.effective_message if hasattr(update, "effective_message") else update.message
+    await message.reply_html(resumo, reply_markup=reply_markup)
 
 async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -300,15 +398,24 @@ async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"<b>Valor:</b> {r['valor']}\n"
             f"<b>Vencimento:</b> {r['vencimento']}\n"
             f"<b>Servidor:</b> {r['servidor']}\n"
+            f"<b>Status:</b> {r.get('status_pagamento', 'pendente')}\n"
+            f"<b>Pago em:</b> {r.get('data_pagamento') or '-'}\n"
             f"<b>Outras informações:</b> {r['outras_informacoes'] or '-'}"
         )
         await query.edit_message_text(detalhes, parse_mode="HTML")
     else:
         await query.edit_message_text("Cliente não encontrado.")
 
-# --- Main ---
+# =========
+# Main
+# =========
 async def main():
     logging.basicConfig(level=logging.INFO)
+    if not TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN não definido.")
+    if not POSTGRES_URL:
+        raise RuntimeError("POSTGRES_URL não definido.")
+
     application = Application.builder().token(TOKEN).build()
 
     # Pool de conexões Postgres
