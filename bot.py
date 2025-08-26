@@ -89,6 +89,21 @@ async def main():
 
     await application.run_polling()
 
+import sys
+import asyncio
+
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    import nest_asyncio
+    nest_asyncio.apply()  # <- Permite uso de event loop já existente
+
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    try:
+        asyncio.run(main())
+    except RuntimeError as e:
+        # Para ambientes onde o event loop já está rodando (ex: Railway, Jupyter, Colab)
+        if "running event loop" in str(e):
+            loop = asyncio.get_event_loop()
+            loop.run_until_complete(main())
+        else:
+            raise
