@@ -18,8 +18,8 @@ POSTGRES_URL = os.environ.get("POSTGRES_URL")
 # --- Estados do ConversationHandler ---
 (
     ASK_CLIENT_NAME, ASK_CLIENT_PHONE, ASK_CLIENT_PACKAGE, ASK_CLIENT_VALUE,
-    ASK_CLIENT_DUE, ASK_CLIENT_SERVER, ASK_CLIENT_EXTRA, CONFIRM_CLIENT
-) = range(8)
+    ASK_CLIENT_DUE, ASK_CLIENT_SERVER, ASK_CLIENT_EXTRA
+) = range(7)
 
 # --- Banco de dados ---
 async def create_pool():
@@ -31,7 +31,7 @@ async def init_db(pool):
             CREATE TABLE IF NOT EXISTS clientes (
                 id SERIAL PRIMARY KEY,
                 user_id BIGINT,
-                nome TEXT,
+                nome TEXT NOT NULL,
                 telefone TEXT,
                 pacote TEXT,
                 valor TEXT,
@@ -93,6 +93,8 @@ extra_keyboard = ReplyKeyboardMarkup(
 
 # --- Utilitário para parse de data ---
 def parse_date(dtstr):
+    if not dtstr:
+        return None
     try:
         return date.fromisoformat(dtstr)
     except:
@@ -147,7 +149,8 @@ async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if pacote in datas:
         datas_keyboard.append([datas[pacote].strftime("%d/%m/%Y")])
     datas_keyboard.append(["📅 OUTRA DATA"])
-    await update.message.reply_text("Escolha a data de vencimento:", reply_markup=ReplyKeyboardMarkup(datas_keyboard, resize_keyboard=True, one_time_keyboard=True))
+    await update.message.reply_text("Escolha a data de vencimento:", 
+                                    reply_markup=ReplyKeyboardMarkup(datas_keyboard, resize_keyboard=True, one_time_keyboard=True))
     return ASK_CLIENT_DUE
 
 async def ask_client_due(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -245,10 +248,7 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         buttons.append([InlineKeyboardButton(label, callback_data=f"cliente_{r['id']}")])
 
     reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
-
-    # Corrigido: usar effective_message para responder certo tanto pra /start quanto pra texto do menu
-    message = update.effective_message if hasattr(update, "effective_message") else update.message
-    await message.reply_html(resumo, reply_markup=reply_markup)
+    await update.message.reply_html(resumo, reply_markup=reply_markup)
 
 async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -283,10 +283,7 @@ async def main():
 
     # Conversa para adicionar cliente
     conv_add_cliente = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex("^ADICIONAR CLIENTE$"), menu_handler),
-            MessageHandler(filters.Regex("^LISTAR CLIENTES$"), menu_handler)
-        ],
+        entry_points=[MessageHandler(filters.Regex("^ADICIONAR CLIENTE$"), menu_handler)],
         states={
             ASK_CLIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_name)],
             ASK_CLIENT_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_phone)],
@@ -302,6 +299,7 @@ async def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_add_cliente)
+    application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), menu_handler))
     application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_"))
 
     await application.run_polling()
