@@ -43,13 +43,20 @@ async def init_db(pool):
 
 async def add_cliente(pool, user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes):
     async with pool.acquire() as conn:
-        await conn.execute(
-            """
-            INSERT INTO clientes (user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-            """,
-            user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes
-        )
+        try:
+            cliente_id = await conn.fetchval(
+                """
+                INSERT INTO clientes (user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                RETURNING id
+                """,
+                user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes
+            )
+            logging.info(f"Cliente salvo com ID {cliente_id}")
+            return cliente_id
+        except Exception as e:
+            logging.error(f"Erro ao salvar cliente: {e}")
+            return None
 
 # --- Teclados ---
 menu_keyboard = ReplyKeyboardMarkup(
@@ -131,37 +138,45 @@ async def ask_client_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ASK_CLIENT_PACKAGE
 
 async def ask_client_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["pacote"] = update.message.text
-    await update.message.reply_text("Escolha o valor:", reply_markup=value_keyboard)
-    return ASK_CLIENT_VALUE
+    texto = update.message.text
+    if texto == "🛠️ PACOTE PERSONALIZADO":
+        await update.message.reply_text("Digite o nome do pacote personalizado:")
+        return ASK_CLIENT_PACKAGE
+    else:
+        context.user_data["pacote"] = texto
+        await update.message.reply_text("Escolha o valor:", reply_markup=value_keyboard)
+        return ASK_CLIENT_VALUE
 
 async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["valor"] = update.message.text
-    hoje = date.today()
-    pacote = context.user_data.get("pacote", "")
-    datas = {
-        "📅 MENSAL": hoje + timedelta(days=30),
-        "📆 TRIMESTRAL": hoje + timedelta(days=90),
-        "📅 SEMESTRAL": hoje + timedelta(days=180),
-        "📅 ANUAL": hoje + timedelta(days=365),
-    }
-
-    sugestoes = []
-    if pacote in datas:
-        sugestoes.append([datas[pacote].strftime("%d/%m/%Y")])
-    sugestoes.append(["📅 OUTRA DATA"])
-
-    await update.message.reply_text(
-        "Escolha a data de vencimento ou digite manualmente:",
-        reply_markup=ReplyKeyboardMarkup(sugestoes, resize_keyboard=True, one_time_keyboard=True)
-    )
-    return ASK_CLIENT_DUE
+    texto = update.message.text
+    if texto == "💸 OUTRO VALOR":
+        await update.message.reply_text("Digite o valor do pacote (apenas números):")
+        return ASK_CLIENT_VALUE
+    else:
+        context.user_data["valor"] = texto
+        hoje = date.today()
+        pacote = context.user_data.get("pacote", "")
+        datas = {
+            "📅 MENSAL": hoje + timedelta(days=30),
+            "📆 TRIMESTRAL": hoje + timedelta(days=90),
+            "📅 SEMESTRAL": hoje + timedelta(days=180),
+            "📅 ANUAL": hoje + timedelta(days=365),
+        }
+        sugestoes = []
+        if pacote in datas:
+            sugestoes.append([datas[pacote].strftime("%d/%m/%Y")])
+        sugestoes.append(["📅 OUTRA DATA"])
+        await update.message.reply_text(
+            "Escolha a data de vencimento ou digite manualmente:",
+            reply_markup=ReplyKeyboardMarkup(sugestoes, resize_keyboard=True, one_time_keyboard=True)
+        )
+        return ASK_CLIENT_DUE
 
 async def ask_client_due(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text
     if texto == "📅 OUTRA DATA":
         await update.message.reply_text("Digite a data de vencimento no formato DD/MM/AAAA:")
-        return ASK_CLIENT_DUE  # permanece no mesmo estado até digitar
+        return ASK_CLIENT_DUE
     else:
         context.user_data["vencimento"] = texto
         await update.message.reply_text("Escolha o servidor:", reply_markup=server_keyboard)
@@ -171,7 +186,7 @@ async def ask_client_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text
     if texto == "🖊️ OUTRO SERVIDOR":
         await update.message.reply_text("Digite o nome do servidor:")
-        return ASK_CLIENT_SERVER  # permanece no mesmo estado até digitar
+        return ASK_CLIENT_SERVER
     else:
         context.user_data["servidor"] = texto
         await update.message.reply_text(
@@ -209,21 +224,26 @@ async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.clear()
             return ConversationHandler.END
 
-    await add_cliente(
+    cliente_id = await add_cliente(
         pool, user_id, dados["nome"], dados["telefone"], dados["pacote"],
         dados["valor"], dados["vencimento"], dados["servidor"], outras_informacoes
     )
 
-    resumo = (
-        f"Cliente cadastrado com sucesso! ✅\n"
-        f"<b>Nome:</b> {dados.get('nome')}\n"
-        f"<b>Telefone:</b> {dados.get('telefone')}\n"
-        f"<b>Pacote:</b> {dados.get('pacote')}\n"
-        f"<b>Valor:</b> {dados.get('valor')}\n"
-        f"<b>Vencimento:</b> {dados.get('vencimento')}\n"
-        f"<b>Servidor:</b> {dados.get('servidor')}\n"
-        f"<b>Outras informações:</b> {outras_informacoes or '-'}"
-    )
+    if cliente_id:
+        resumo = (
+            f"Cliente cadastrado com sucesso! ✅\n"
+            f"<b>ID:</b> {cliente_id}\n"
+            f"<b>Nome:</b> {dados.get('nome')}\n"
+            f"<b>Telefone:</b> {dados.get('telefone')}\n"
+            f"<b>Pacote:</b> {dados.get('pacote')}\n"
+            f"<b>Valor:</b> {dados.get('valor')}\n"
+            f"<b>Vencimento:</b> {dados.get('vencimento')}\n"
+            f"<b>Servidor:</b> {dados.get('servidor')}\n"
+            f"<b>Outras informações:</b> {outras_informacoes or '-'}"
+        )
+    else:
+        resumo = "❌ Erro ao salvar cliente. Verifique os logs."
+
     await update.message.reply_html(resumo, reply_markup=menu_keyboard)
     context.user_data.clear()
     return ConversationHandler.END
@@ -273,6 +293,7 @@ async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         r = await conn.fetchrow("SELECT * FROM clientes WHERE id = $1", cliente_id)
     if r:
         detalhes = (
+            f"<b>ID:</b> {r['id']}\n"
             f"<b>Nome:</b> {r['nome']}\n"
             f"<b>Telefone:</b> {r['telefone']}\n"
             f"<b>Pacote:</b> {r['pacote']}\n"
