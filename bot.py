@@ -1,9 +1,12 @@
 import logging
 import os
-from telegram import Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
+from telegram import (
+    Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
+    InlineKeyboardButton, InlineKeyboardMarkup
+)
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler
+    ContextTypes, ConversationHandler, CallbackQueryHandler
 )
 import asyncpg
 from datetime import date, timedelta
@@ -18,7 +21,7 @@ POSTGRES_URL = os.environ.get("POSTGRES_URL")
     ASK_CLIENT_DUE, ASK_CLIENT_SERVER, ASK_CLIENT_EXTRA, CONFIRM_CLIENT
 ) = range(8)
 
-# --- Funções de banco de dados ---
+# --- Banco de dados ---
 async def create_pool():
     return await asyncpg.create_pool(dsn=POSTGRES_URL)
 
@@ -49,6 +52,14 @@ async def add_cliente(pool, user_id, nome, telefone, pacote, valor, vencimento, 
         )
 
 # --- Teclados ---
+menu_keyboard = ReplyKeyboardMarkup(
+    [
+        [KeyboardButton("ADICIONAR CLIENTE")],
+        [KeyboardButton("LISTAR CLIENTES")]
+    ],
+    resize_keyboard=True
+)
+
 package_keyboard = ReplyKeyboardMarkup(
     [
         ["📅 MENSAL", "📆 TRIMESTRAL"],
@@ -80,21 +91,32 @@ extra_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True, is_persistent=True
 )
 
-# --- Handlers ---
+# --- Utilitário para parse de data ---
+def parse_date(dtstr):
+    try:
+        return date.fromisoformat(dtstr)
+    except:
+        try:
+            d, m, y = map(int, dtstr.split("/"))
+            return date(y, m, d)
+        except:
+            return None
+
+# --- Handlers principais ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [
-        [KeyboardButton("ADICIONAR CLIENTE")]
-    ]
-    markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-    await update.message.reply_text("Bem-vindo! Use o menu abaixo:", reply_markup=markup)
+    await update.message.reply_text("Bem-vindo! Use o menu abaixo:", reply_markup=menu_keyboard)
 
 async def handle_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     if text == "ADICIONAR CLIENTE":
         await update.message.reply_text("Digite o nome do cliente:", reply_markup=ReplyKeyboardRemove())
         return ASK_CLIENT_NAME
+    elif text == "LISTAR CLIENTES":
+        await listar_clientes(update, context)
+        return ConversationHandler.END
     return ConversationHandler.END
 
+# --- Fluxo de cadastro de cliente ---
 async def ask_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["nome"] = update.message.text
     await update.message.reply_text("Agora envie o telefone do cliente:")
@@ -112,7 +134,6 @@ async def ask_client_package(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["valor"] = update.message.text
-    # Gera datas automáticas conforme o pacote
     hoje = date.today()
     pacote = context.user_data.get("pacote", "")
     datas = {
@@ -154,14 +175,12 @@ async def ask_client_extra(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.message.text == "❌ Cancelar":
-        await update.message.reply_text("Cadastro cancelado.", reply_markup=ReplyKeyboardRemove())
+        await update.message.reply_text("Cadastro cancelado.", reply_markup=menu_keyboard)
         return ConversationHandler.END
 
     dados = context.user_data
     user_id = update.effective_user.id
-    # Garante que o campo outras_informacoes exista
     outras_informacoes = dados.get("outras_informacoes", "")
-
     pool = context.application.bot_data["pool"]
     await add_cliente(
         pool, user_id, dados["nome"], dados["telefone"], dados["pacote"],
@@ -179,8 +198,65 @@ async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Outras informações: {outras_informacoes}\n"
         "\nCliente adicionado com sucesso! ✅"
     )
-    await update.message.reply_text(resumo, reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(resumo, reply_markup=menu_keyboard)
     return ConversationHandler.END
+
+# --- Listar clientes e detalhes ---
+async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    pool = context.application.bot_data["pool"]
+    async with pool.acquire() as conn:
+        rows = await conn.fetch("SELECT id, nome, vencimento FROM clientes ORDER BY vencimento ASC NULLS LAST")
+
+    total = len(rows)
+    hoje = date.today()
+    vencem_hoje = sum(1 for r in rows if r["vencimento"] and parse_date(r["vencimento"]) == hoje)
+    vencem_3dias = sum(1 for r in rows if r["vencimento"] and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 3)
+    vencem_7dias = sum(1 for r in rows if r["vencimento"] and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 7)
+
+    resumo = (
+        f"📋 <b>Resumo dos clientes</b>\n"
+        f"Total: <b>{total}</b>\n"
+        f"Vencem hoje: <b>{vencem_hoje}</b>\n"
+        f"Vencem em até 3 dias: <b>{vencem_3dias}</b>\n"
+        f"Vencem em até 7 dias: <b>{vencem_7dias}</b>\n"
+        "\nSelecione um cliente para ver detalhes:"
+    )
+
+    buttons = []
+    for r in rows:
+        nome = r["nome"]
+        venc = r["vencimento"]
+        if not venc:
+            label = f"{nome} – sem vencimento"
+        else:
+            dias = (parse_date(venc) - hoje).days if parse_date(venc) else None
+            alerta = " ⚠️" if dias is not None and 0 <= dias <= 3 else ""
+            label = f"{nome} – {venc}{alerta}"
+        buttons.append([InlineKeyboardButton(label, callback_data=f"cliente_{r['id']}")])
+
+    reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
+    await update.message.reply_html(resumo, reply_markup=reply_markup)
+
+async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    cliente_id = int(query.data.replace("cliente_", ""))
+    pool = context.application.bot_data["pool"]
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow("SELECT * FROM clientes WHERE id = $1", cliente_id)
+    if r:
+        detalhes = (
+            f"<b>Nome:</b> {r['nome']}\n"
+            f"<b>Telefone:</b> {r['telefone']}\n"
+            f"<b>Pacote:</b> {r['pacote']}\n"
+            f"<b>Valor:</b> {r['valor']}\n"
+            f"<b>Vencimento:</b> {r['vencimento']}\n"
+            f"<b>Servidor:</b> {r['servidor']}\n"
+            f"<b>Outras informações:</b> {r['outras_informacoes'] or '-'}"
+        )
+        await query.edit_message_text(detalhes, parse_mode="HTML")
+    else:
+        await query.edit_message_text("Cliente não encontrado.")
 
 # --- Main ---
 async def main():
@@ -194,7 +270,10 @@ async def main():
 
     # Conversa para adicionar cliente
     conv_add_cliente = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^ADICIONAR CLIENTE$"), handle_menu)],
+        entry_points=[
+            MessageHandler(filters.Regex("^ADICIONAR CLIENTE$"), handle_menu),
+            MessageHandler(filters.Regex("^LISTAR CLIENTES$"), handle_menu)
+        ],
         states={
             ASK_CLIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_name)],
             ASK_CLIENT_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_phone)],
@@ -204,11 +283,13 @@ async def main():
             ASK_CLIENT_SERVER: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_server)],
             ASK_CLIENT_EXTRA: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_extra)],
         },
-        fallbacks=[]
+        fallbacks=[],
+        allow_reentry=True,
     )
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_add_cliente)
+    application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_"))
 
     await application.run_polling()
 
@@ -217,14 +298,13 @@ import asyncio
 
 if __name__ == "__main__":
     import nest_asyncio
-    nest_asyncio.apply()  # <- Permite uso de event loop já existente
+    nest_asyncio.apply()
 
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:
         asyncio.run(main())
     except RuntimeError as e:
-        # Para ambientes onde o event loop já está rodando (ex: Railway, Jupyter, Colab)
         if "running event loop" in str(e):
             loop = asyncio.get_event_loop()
             loop.run_until_complete(main())
