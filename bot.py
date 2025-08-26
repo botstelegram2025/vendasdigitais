@@ -29,8 +29,9 @@ POSTGRES_URL = os.environ.get("POSTGRES_URL")
     ASK_CLIENT_NAME, ASK_CLIENT_PHONE, ASK_CLIENT_PACKAGE, ASK_CLIENT_VALUE,
     ASK_CLIENT_DUE, ASK_CLIENT_SERVER, ASK_CLIENT_EXTRA,
     EDIT_FIELD, SEND_MESSAGE, RENEW_DATE,
-    TEMPLATE_ACTION, TEMPLATE_NAME, TEMPLATE_CONTENT, TEMPLATE_EDIT
-) = range(14)
+    TEMPLATE_ACTION, TEMPLATE_NAME, TEMPLATE_CONTENT, TEMPLATE_EDIT,
+    PREVIEW_EDIT  # <--- novo estado para editar o texto da prévia
+) = range(15)
 
 # ==============================
 # Utilitários
@@ -644,14 +645,13 @@ async def msg_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_message_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     cid = context.user_data.get("msg_cliente")
-    # guarda para preview
     context.user_data["send_preview"] = {"cid": cid, "text": text}
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Enviar", callback_data=f"send_now_{cid}")],
+        [InlineKeyboardButton("📝 Editar antes de enviar", callback_data=f"edit_preview_{cid}")],
         [InlineKeyboardButton("❌ Cancelar", callback_data=f"cancel_send_{cid}")]
     ])
     await update.message.reply_html(f"📄 <b>Pré-visualização</b>:\n\n{text}", reply_markup=kb)
-    # permanece fora de Conversation (encerra a conversa de digitação)
     return ConversationHandler.END
 
 # =========
@@ -691,16 +691,16 @@ async def use_template_select(update: Update, context: ContextTypes.DEFAULT_TYPE
         return
 
     texto = aplicar_template(tpl["conteudo"], cliente)
-    # guarda para preview
     context.user_data["send_preview"] = {"cid": cid, "text": texto}
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ Enviar", callback_data=f"send_now_{cid}")],
+        [InlineKeyboardButton("📝 Editar antes de enviar", callback_data=f"edit_preview_{cid}")],
         [InlineKeyboardButton("❌ Cancelar", callback_data=f"cancel_send_{cid}")]
     ])
     await q.message.reply_html(f"📄 <b>Pré-visualização</b> (template <b>{tpl['nome']}</b>):\n\n{texto}", reply_markup=kb)
 
 # =========
-# Handlers do PREVIEW (confirmar/cancelar)
+# Handlers do PREVIEW (confirmar/cancelar/editar)
 # =========
 async def preview_send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -720,8 +720,30 @@ async def preview_send_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE
     await q.answer()
     context.user_data.pop("send_preview", None)
     await q.edit_message_text("❌ Envio cancelado.")
-    # opcional: voltar ao menu principal
     await q.message.reply_text("Voltei ao menu principal.", reply_markup=menu_keyboard)
+
+async def preview_edit_request(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    preview = context.user_data.get("send_preview")
+    if not preview:
+        await q.edit_message_text("Nenhuma mensagem em pré-visualização para editar.")
+        return ConversationHandler.END
+    await q.message.reply_text("📝 Envie a nova mensagem para edição da prévia:", reply_markup=cancel_keyboard)
+    return PREVIEW_EDIT
+
+async def preview_edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    new_text = update.message.text
+    preview = context.user_data.get("send_preview", {})
+    cid = preview.get("cid")
+    context.user_data["send_preview"] = {"cid": cid, "text": new_text}
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ Enviar", callback_data=f"send_now_{cid}")],
+        [InlineKeyboardButton("📝 Editar antes de enviar", callback_data=f"edit_preview_{cid}")],
+        [InlineKeyboardButton("❌ Cancelar", callback_data=f"cancel_send_{cid}")]
+    ])
+    await update.message.reply_html(f"📄 <b>Pré-visualização</b> (atualizada):\n\n{new_text}", reply_markup=kb)
+    return ConversationHandler.END
 
 # =========
 # Templates: CRUD via bot
@@ -884,6 +906,14 @@ async def main():
         allow_reentry=True
     )
 
+    # Conversa para editar o texto da PRÉVIA
+    conv_preview_edit = ConversationHandler(
+        entry_points=[CallbackQueryHandler(preview_edit_request, pattern=r"^edit_preview_\d+$")],
+        states={PREVIEW_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, preview_edit_save)]},
+        fallbacks=[MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar)],
+        allow_reentry=True
+    )
+
     # Handlers gerais
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_add)
@@ -891,6 +921,7 @@ async def main():
     application.add_handler(conv_msg)
     application.add_handler(conv_renew)
     application.add_handler(conv_templates)
+    application.add_handler(conv_preview_edit)
 
     # Listar clientes
     application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), listar_clientes))
@@ -908,11 +939,6 @@ async def main():
     # Callbacks do preview de envio
     application.add_handler(CallbackQueryHandler(preview_send_now, pattern=r"^send_now_\d+$"))
     application.add_handler(CallbackQueryHandler(preview_send_cancel, pattern=r"^cancel_send_\d+$"))
-
-    # Callbacks de templates (CRUD)
-    application.add_handler(CallbackQueryHandler(template_callback, pattern=r"^tpl_\d+"))
-    application.add_handler(CallbackQueryHandler(template_edit, pattern=r"^tpl_edit_\d+"))
-    application.add_handler(CallbackQueryHandler(template_delete, pattern=r"^tpl_del_\d+"))
 
     # Scheduler de notificações (opcional)
     if APSCHED_AVAILABLE:
