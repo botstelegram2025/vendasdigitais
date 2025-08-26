@@ -303,7 +303,9 @@ async def main():
 
     # Conversa templates
     conv_templates = ConversationHandler(
-        entry_points=[MessageHandler(filters.Regex("^GERENCIAR TEMPLATES|LISTAR CLIENTES$"), templates_menu)],
+        entry_points=[MessageHandler(filters.Regex("^GERENCIAR TEMPLATES$"), templates_menu)],
+        entry_points=[MessageHandler(filters.Regex("^LISTAR CLIENTES$"), templates_menu)],
+        entry_points=[MessageHandler(filters.Regex("^ADICIONAR CLIENTE$"), templates_menu)],
         states={
             TEMPLATE_ACTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, template_action)],
             TEMPLATE_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, template_name)],
