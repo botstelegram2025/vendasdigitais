@@ -21,8 +21,8 @@ POSTGRES_URL = os.environ.get("POSTGRES_URL")
 (
     ASK_CLIENT_NAME, ASK_CLIENT_PHONE, ASK_CLIENT_PACKAGE, ASK_CLIENT_VALUE,
     ASK_CLIENT_DUE, ASK_CLIENT_SERVER, ASK_CLIENT_EXTRA,
-    EDIT_FIELD, SEND_MESSAGE
-) = range(9)
+    EDIT_FIELD, SEND_MESSAGE, RENEW_DATE
+) = range(10)
 
 # ==============================
 # Utilitários
@@ -57,10 +57,22 @@ def parse_money(txt: str | None) -> Decimal:
         return Decimal("0")
 
 def fmt_money(val: Decimal) -> str:
+    # recebe sempre Decimal
     q = val.quantize(Decimal("0.01"))
     inteiro, _, frac = f"{q:.2f}".partition(".")
     inteiro = f"{int(inteiro):,}".replace(",", ".")
     return f"{inteiro},{frac}"
+
+def month_bounds(today: date | None = None):
+    if not today:
+        today = date.today()
+    start = today.replace(day=1)
+    if start.month == 12:
+        next_month_start = date(start.year + 1, 1, 1)
+    else:
+        next_month_start = date(start.year, start.month + 1, 1)
+    end = next_month_start - timedelta(days=1)
+    return start, end
 
 # =================
 # Banco de Dados
@@ -109,7 +121,6 @@ async def add_cliente(pool, user_id, nome, telefone, pacote, valor, vencimento, 
 # =========
 menu_keyboard = ReplyKeyboardMarkup(
     [
-        [KeyboardButton("ADICIONAR CLIENTE")],
         [KeyboardButton("LISTAR CLIENTES")]
     ],
     resize_keyboard=True
@@ -126,13 +137,24 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     total = len(rows)
     hoje = date.today()
-
     vencem_hoje = sum(1 for r in rows if r["vencimento"] and parse_date(r["vencimento"]) == hoje)
-    vencem_3dias = sum(1 for r in rows if r["vencimento"] and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 3)
-    vencem_7dias = sum(1 for r in rows if r["vencimento"] and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 7)
+    vencem_3dias = sum(1 for r in rows if r["vencimento"] and parse_date(r["vencimento"]) and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 3)
+    vencem_7dias = sum(1 for r in rows if r["vencimento"] and parse_date(r["vencimento"]) and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 7)
 
-    valores_recebidos = sum(parse_money(r["valor"]) for r in rows if r["status_pagamento"] == "pago")
-    valores_previstos = sum(parse_money(r["valor"]) for r in rows)
+    # métricas do mês corrente
+    mes_ini, mes_fim = month_bounds(hoje)
+    recebido_mes = Decimal("0")
+    previsto_mes = Decimal("0")
+
+    for r in rows:
+        v = parse_money(r["valor"])
+        vcto = parse_date(r["vencimento"]) if r["vencimento"] else None
+        if vcto and mes_ini <= vcto <= mes_fim:
+            previsto_mes += v
+        if (r["status_pagamento"] or "").lower() == "pago":
+            dp = parse_date(r["data_pagamento"] or "")
+            if dp and mes_ini <= dp <= mes_fim:
+                recebido_mes += v
 
     resumo = (
         f"📋 <b>Resumo dos clientes</b>\n"
@@ -140,8 +162,8 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"Vencem hoje: <b>{vencem_hoje}</b>\n"
         f"Vencem até 3 dias: <b>{vencem_3dias}</b>\n"
         f"Vencem até 7 dias: <b>{vencem_7dias}</b>\n\n"
-        f"💰 Recebido no mês: <b>R$ {fmt_money(valores_recebidos)}</b>\n"
-        f"📊 Previsto: <b>R$ {fmt_money(valores_previstos)}</b>\n\n"
+        f"💰 Recebido no mês: <b>R$ {fmt_money(recebido_mes)}</b>\n"
+        f"📊 Previsto no mês: <b>R$ {fmt_money(previsto_mes)}</b>\n\n"
         "Selecione um cliente para ver detalhes:"
     )
 
@@ -231,8 +253,9 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = context.user_data.get("edit_cliente")
     campo = context.user_data.get("edit_campo")
     pool = context.application.bot_data["pool"]
+    user_id = update.effective_user.id
     async with pool.acquire() as conn:
-        await conn.execute(f"UPDATE clientes SET {campo}=$1 WHERE id=$2", novo_valor, cid)
+        await conn.execute(f"UPDATE clientes SET {campo}=$1 WHERE id=$2 AND user_id=$3", novo_valor, cid, user_id)
     await update.message.reply_text(f"✅ {campo} atualizado com sucesso.", reply_markup=menu_keyboard)
     context.user_data.clear()
     return ConversationHandler.END
@@ -249,6 +272,56 @@ async def renew(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📅 Escolher nova data", callback_data=f"renew_new_{cid}")]
     ]
     await q.edit_message_text("Escolha como renovar:", reply_markup=InlineKeyboardMarkup(kb))
+
+def _cycle_days(pacote: str | None) -> int:
+    mapping = {
+        "📅 MENSAL": 30,
+        "📆 TRIMESTRAL": 90,
+        "📅 SEMESTRAL": 180,
+        "📅 ANUAL": 365,
+    }
+    return mapping.get((pacote or "").upper(), 30)
+
+async def renew_same_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    cid = int(q.data.replace("renew_same_", ""))
+    pool = context.application.bot_data["pool"]
+    user_id = update.effective_user.id
+    async with pool.acquire() as conn:
+        r = await conn.fetchrow("SELECT pacote, vencimento FROM clientes WHERE id=$1 AND user_id=$2", cid, user_id)
+        if not r:
+            await q.edit_message_text("Cliente não encontrado.")
+            return
+        dias = _cycle_days(r["pacote"])
+        base = parse_date(r["vencimento"]) or date.today()
+        novo = base + timedelta(days=dias)
+        novo_str = novo.strftime("%d/%m/%Y")
+        await conn.execute("UPDATE clientes SET vencimento=$1 WHERE id=$2 AND user_id=$3", novo_str, cid, user_id)
+    await q.edit_message_text(f"✅ Renovado! Novo vencimento: {novo_str}")
+
+async def renew_new_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    cid = int(q.data.replace("renew_new_", ""))
+    context.user_data["renew_cliente"] = cid
+    await q.message.reply_text("Digite a nova data de vencimento (DD/MM/AAAA):")
+    return RENEW_DATE
+
+async def renew_save_new_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    cid = context.user_data.get("renew_cliente")
+    user_id = update.effective_user.id
+    texto = update.message.text
+    # aceita como texto (armazenamos como veio), mas podemos validar
+    if not parse_date(texto):
+        await update.message.reply_text("❗ Data inválida. Use o formato DD/MM/AAAA ou YYYY-MM-DD.")
+        return RENEW_DATE
+    pool = context.application.bot_data["pool"]
+    async with pool.acquire() as conn:
+        await conn.execute("UPDATE clientes SET vencimento=$1 WHERE id=$2 AND user_id=$3", texto, cid, user_id)
+    await update.message.reply_text(f"✅ Renovado! Novo vencimento: {texto}", reply_markup=menu_keyboard)
+    context.user_data.clear()
+    return ConversationHandler.END
 
 # =========
 # Excluir
@@ -268,8 +341,9 @@ async def delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.answer()
     cid = int(q.data.replace("delete_yes_", ""))
     pool = context.application.bot_data["pool"]
+    user_id = update.effective_user.id
     async with pool.acquire() as conn:
-        await conn.execute("DELETE FROM clientes WHERE id=$1", cid)
+        await conn.execute("DELETE FROM clientes WHERE id=$1 AND user_id=$2", cid, user_id)
     await q.edit_message_text("✅ Cliente excluído com sucesso.")
 
 # =========
@@ -286,20 +360,33 @@ async def msg_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def send_message_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message.text
     cid = context.user_data.get("msg_cliente")
+    # Aqui você pode integrar com WhatsApp/Telegram conforme sua infra
     await update.message.reply_text(f"📩 Mensagem enviada para cliente {cid}:\n\n{msg}")
     context.user_data.clear()
     return ConversationHandler.END
+
+# =========
+# /start
+# =========
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Bem-vindo! Toque em LISTAR CLIENTES para ver o dashboard.", reply_markup=menu_keyboard)
 
 # =========
 # Main
 # =========
 async def main():
     logging.basicConfig(level=logging.INFO)
+    if not TOKEN:
+        raise RuntimeError("TELEGRAM_BOT_TOKEN não definido.")
+    if not POSTGRES_URL:
+        raise RuntimeError("POSTGRES_URL não definido.")
+
     application = Application.builder().token(TOKEN).build()
     pool = await create_pool()
     await init_db(pool)
     application.bot_data["pool"] = pool
 
+    # Conversas
     conv_edit = ConversationHandler(
         entry_points=[CallbackQueryHandler(edit_field, pattern=r"^editfield_")],
         states={EDIT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)]},
@@ -310,14 +397,24 @@ async def main():
         states={SEND_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_message_done)]},
         fallbacks=[]
     )
+    conv_renew = ConversationHandler(
+        entry_points=[CallbackQueryHandler(renew_new_handler, pattern=r"^renew_new_")],
+        states={RENEW_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, renew_save_new_date)]},
+        fallbacks=[]
+    )
 
-    application.add_handler(CommandHandler("start", listar_clientes))
+    # Handlers
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), listar_clientes))
+
     application.add_handler(conv_edit)
     application.add_handler(conv_msg)
-    application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), listar_clientes))
+    application.add_handler(conv_renew)
+
     application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_"))
     application.add_handler(CallbackQueryHandler(edit_menu, pattern=r"^editmenu_"))
     application.add_handler(CallbackQueryHandler(renew, pattern=r"^renew_"))
+    application.add_handler(CallbackQueryHandler(renew_same_handler, pattern=r"^renew_same_"))
     application.add_handler(CallbackQueryHandler(delete_client, pattern=r"^delete_[0-9]+$"))
     application.add_handler(CallbackQueryHandler(delete_yes, pattern=r"^delete_yes_"))
 
