@@ -1,3 +1,10 @@
-python-telegram-bot==20.7
-asyncpg
-nest_asyncio
+# Telegram bot + Postgres assíncrono + agendador
+python-telegram-bot==21.4
+asyncpg==0.29.0
+
+# Agendamento diário das notificações
+APScheduler==3.10.4
+tzlocal==5.2
+
+# Para compatibilidade com event loop dentro de notebooks/hosts que já têm loop ativo
+nest-asyncio==1.6.0
