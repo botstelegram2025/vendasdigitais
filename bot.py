@@ -2,6 +2,9 @@ import logging
 import os
 import re
 from decimal import Decimal, InvalidOperation
+from datetime import date, timedelta, time as dtime
+import pytz
+
 from telegram import (
     Update, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove,
     InlineKeyboardButton, InlineKeyboardMarkup
@@ -11,27 +14,23 @@ from telegram.ext import (
     ContextTypes, ConversationHandler, CallbackQueryHandler
 )
 import asyncpg
-from datetime import date, timedelta
 
-# --- Agendamento opcional (APScheduler) ---
-try:
-    from apscheduler.schedulers.asyncio import AsyncIOScheduler
-    APSCHED_AVAILABLE = True
-except Exception:
-    APSCHED_AVAILABLE = False
-
-# --- Variáveis de ambiente ---
+# ==============================
+# Variáveis de ambiente
+# ==============================
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 POSTGRES_URL = os.environ.get("POSTGRES_URL")
 
-# --- Estados ---
+# ==============================
+# Estados da conversa
+# ==============================
 (
-    ASK_CLIENT_NAME, ASK_CLIENT_PHONE, ASK_CLIENT_PACKAGE, ASK_CLIENT_VALUE,
-    ASK_CLIENT_DUE, ASK_CLIENT_SERVER, ASK_CLIENT_EXTRA,
+    ASK_CLIENT_NAME, ASK_CLIENT_PHONE, ASK_CLIENT_PACKAGE, ASK_CUSTOM_PACKAGE,
+    ASK_CLIENT_VALUE, ASK_CLIENT_DUE, ASK_CLIENT_SERVER, ASK_CLIENT_EXTRA,
     EDIT_FIELD, SEND_MESSAGE, RENEW_DATE,
     TEMPLATE_ACTION, TEMPLATE_NAME, TEMPLATE_CONTENT, TEMPLATE_EDIT,
     PREVIEW_EDIT
-) = range(15)
+) = range(16)
 
 # ==============================
 # Utilitários
@@ -40,15 +39,22 @@ def parse_date(dtstr: str | None):
     if not dtstr:
         return None
     dtstr = dtstr.strip()
+    # ISO YYYY-MM-DD
     try:
         return date.fromisoformat(dtstr)
     except Exception:
         pass
+    # DD/MM/YYYY
     try:
-        d, m, y = map(int, dtstr.split("/"))
+        d, m, y = map(int, re.split(r"[\/\-]", dtstr))
         return date(y, m, d)
     except Exception:
         return None
+
+def fmt_date_br(d: date | None) -> str:
+    if not d:
+        return "-"
+    return d.strftime("%d/%m/%Y")
 
 def parse_money(txt: str | None) -> Decimal:
     if not txt:
@@ -94,29 +100,34 @@ def cycle_days_from_package(pacote: str | None) -> int:
     key = pacote.strip().upper()
     return mapping.get(key, 30)
 
-# =================
+# ==============================
 # Banco de Dados
-# =================
+# ==============================
 async def create_pool():
     return await asyncpg.create_pool(dsn=POSTGRES_URL)
 
 async def init_db(pool):
     async with pool.acquire() as conn:
+        # Tabela clientes com tipos adequados
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS clientes (
                 id SERIAL PRIMARY KEY,
-                user_id BIGINT,
+                user_id BIGINT NOT NULL,
                 nome TEXT NOT NULL,
                 telefone TEXT,
                 pacote TEXT,
-                valor TEXT,
-                vencimento TEXT,
+                valor NUMERIC(10,2),
+                vencimento DATE,
                 servidor TEXT,
                 outras_informacoes TEXT,
                 status_pagamento TEXT DEFAULT 'pendente',
-                data_pagamento TEXT
+                data_pagamento DATE
             );
         """)
+        # Índices úteis
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_clientes_user_id ON clientes(user_id);")
+        await conn.execute("CREATE INDEX IF NOT EXISTS idx_clientes_vencimento ON clientes(vencimento);")
+
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS templates (
                 id SERIAL PRIMARY KEY,
@@ -125,16 +136,18 @@ async def init_db(pool):
             );
         """)
 
-async def add_cliente(pool, user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes):
+async def add_cliente(pool, user_id, nome, telefone, pacote, valor_dec: Decimal,
+                      vencimento_date: date | None, servidor, outras_informacoes):
     async with pool.acquire() as conn:
         try:
-            cid = await conn.fetchval(
-                """INSERT INTO clientes 
-                   (user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id""",
-                user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes
-            )
-            logging.info(f"Cliente salvo com ID {cid}")
+            async with conn.transaction():
+                cid = await conn.fetchval(
+                    """INSERT INTO clientes 
+                       (user_id, nome, telefone, pacote, valor, vencimento, servidor, outras_informacoes)
+                       VALUES ($1,$2,$3,$4,$5,$6,$7,$8) RETURNING id""",
+                    user_id, nome, telefone, pacote, valor_dec, vencimento_date, servidor, outras_informacoes
+                )
+            logging.info(f"[user={user_id}] Cliente salvo: id={cid}, nome={nome}, tel={telefone}")
             return cid
         except Exception as e:
             logging.exception(f"Erro ao salvar cliente: {e}")
@@ -149,7 +162,6 @@ async def get_template(pool, nome: str):
         return await conn.fetchrow("SELECT conteudo FROM templates WHERE nome=$1", nome)
 
 async def ensure_default_templates(pool):
-    """Cria templates padrão para avisos de vencimento (-2, -1, 0, +1) se não existirem."""
     defaults = {
         "aviso_-2": (
             "Olá {nome}! 👋\n"
@@ -196,31 +208,39 @@ def variables_help_text() -> str:
         "Olá {nome}, seu {pacote} vence em {dias_restantes} dias (\"{vencimento}\"). Valor: R$ {valor}."
     )
 
-# =================
+# ==============================
 # Templates (helper)
-# =================
+# ==============================
 def aplicar_template(conteudo: str, cliente: dict) -> str:
     hoje = date.today()
-    venc = parse_date(cliente["vencimento"]) if cliente["vencimento"] else None
-    dias_rest = (venc - hoje).days if venc else "N/A"
+    venc = cliente["vencimento"]  # já é DATE no banco
+    dias_rest = (venc - hoje).days if isinstance(venc, date) else "N/A"
+
+    # valor é Decimal/NUMERIC no banco; formatar
+    valor_fmt = fmt_money(Decimal(cliente["valor"])) if cliente["valor"] is not None else "0,00"
+
     return conteudo.format(
         nome=cliente["nome"],
         telefone=cliente["telefone"],
         pacote=cliente["pacote"],
-        valor=cliente["valor"],
-        vencimento=cliente["vencimento"],
+        valor=valor_fmt,
+        vencimento=fmt_date_br(venc) if isinstance(venc, date) else (cliente["vencimento"] or "-"),
         servidor=cliente["servidor"],
         dias_restantes=dias_rest
     )
 
+# ==============================
+# Notificações agendadas (JobQueue PTB)
+# ==============================
 async def enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
     pool = context.application.bot_data["pool"]
     async with pool.acquire() as conn:
         clientes = await conn.fetch("SELECT * FROM clientes")
     hoje = date.today()
+    # Observação: substitua <seu_chat_id> pelo chat admin ou crie por-usuário
     for c in clientes:
-        venc = parse_date(c["vencimento"])
-        if not venc:
+        venc = c["vencimento"]  # DATE
+        if not isinstance(venc, date):
             continue
         dias = (venc - hoje).days
         if dias in (-2, -1, 0, 1):
@@ -228,11 +248,15 @@ async def enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
             if tpl:
                 msg = aplicar_template(tpl["conteudo"], c)
                 logging.info(f"[Aviso {dias}] Para {c['nome']}: {msg}")
-                # Ex.: await context.bot.send_message(chat_id=<seu_chat_id>, text=msg)
+                # Exemplo de envio (defina seu chat-id alvo para testes):
+                # await context.bot.send_message(chat_id=<seu_chat_id>, text=msg)
 
-# =========
+async def job_enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
+    await enviar_notificacoes(context)
+
+# ==============================
 # Teclados
-# =========
+# ==============================
 menu_keyboard = ReplyKeyboardMarkup(
     [
         [KeyboardButton("ADICIONAR CLIENTE")],
@@ -281,17 +305,17 @@ cancel_keyboard = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
-# =========
-# Cancelar (fallback)
-# =========
+# ==============================
+# Cancelar
+# ==============================
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     await update.message.reply_text("❌ Operação cancelada. Voltando ao menu.", reply_markup=menu_keyboard)
     return ConversationHandler.END
 
-# =========
-# Fluxo de cadastro de cliente
-# =========
+# ==============================
+# Fluxo de cadastro
+# ==============================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Bem-vindo! Escolha uma opção:", reply_markup=menu_keyboard)
 
@@ -309,12 +333,12 @@ async def menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def ask_client_name(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["nome"] = update.message.text
+    context.user_data["nome"] = update.message.text.strip()
     await update.message.reply_text("Agora envie o telefone do cliente:", reply_markup=cancel_keyboard)
     return ASK_CLIENT_PHONE
 
 async def ask_client_phone(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    context.user_data["telefone"] = update.message.text
+    context.user_data["telefone"] = update.message.text.strip()
     await update.message.reply_text("Escolha o pacote:", reply_markup=package_keyboard)
     return ASK_CLIENT_PACKAGE
 
@@ -322,11 +346,16 @@ async def ask_client_package(update: Update, context: ContextTypes.DEFAULT_TYPE)
     texto = update.message.text
     if texto == "🛠️ PACOTE PERSONALIZADO":
         await update.message.reply_text("Digite o nome do pacote personalizado:", reply_markup=cancel_keyboard)
-        return ASK_CLIENT_PACKAGE
+        return ASK_CUSTOM_PACKAGE
     else:
-        context.user_data["pacote"] = texto
+        context.user_data["pacote"] = texto.strip()
         await update.message.reply_text("Escolha o valor:", reply_markup=value_keyboard)
         return ASK_CLIENT_VALUE
+
+async def ask_custom_package(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["pacote"] = update.message.text.strip()
+    await update.message.reply_text("Escolha o valor:", reply_markup=value_keyboard)
+    return ASK_CLIENT_VALUE
 
 async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     texto = update.message.text
@@ -334,7 +363,10 @@ async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Digite o valor do pacote (ex: 50 ou 50,00):", reply_markup=cancel_keyboard)
         return ASK_CLIENT_VALUE
     else:
-        context.user_data["valor"] = texto
+        valor_dec = parse_money(texto)
+        context.user_data["valor_dec"] = valor_dec
+        context.user_data["valor_fmt"] = fmt_money(valor_dec)
+
         hoje = date.today()
         pacote = context.user_data.get("pacote", "")
         datas = {
@@ -345,7 +377,7 @@ async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         }
         sugestoes = []
         if pacote in datas:
-            sugestoes.append([datas[pacote].strftime("%d/%m/%Y")])
+            sugestoes.append([fmt_date_br(datas[pacote])])
         sugestoes.append(["📅 OUTRA DATA"])
         await update.message.reply_text(
             "Escolha a data de vencimento ou digite manualmente:",
@@ -359,7 +391,8 @@ async def ask_client_due(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Digite a data de vencimento no formato DD/MM/AAAA:", reply_markup=cancel_keyboard)
         return ASK_CLIENT_DUE
     else:
-        context.user_data["vencimento"] = texto
+        # Guardar string para exibição e date para DB na confirmação
+        context.user_data["vencimento_str"] = texto.strip()
         await update.message.reply_text("Escolha o servidor:", reply_markup=server_keyboard)
         return ASK_CLIENT_SERVER
 
@@ -369,7 +402,7 @@ async def ask_client_server(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Digite o nome do servidor:", reply_markup=cancel_keyboard)
         return ASK_CLIENT_SERVER
     else:
-        context.user_data["servidor"] = texto
+        context.user_data["servidor"] = texto.strip()
         await update.message.reply_text(
             "Se desejar, informe outras informações. Depois clique em ✅ Salvar ou ❌ Cancelar / Menu Principal.",
             reply_markup=extra_keyboard
@@ -386,19 +419,24 @@ async def ask_client_extra(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
         return ConversationHandler.END
     else:
-        context.user_data["outras_informacoes"] = text
+        context.user_data["outras_informacoes"] = text.strip()
         await update.message.reply_text("Clique em ✅ Salvar ou ❌ Cancelar / Menu Principal.", reply_markup=extra_keyboard)
         return ASK_CLIENT_EXTRA
 
 async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     dados = context.user_data
     user_id = update.effective_user.id
-    outras = dados.get("outras_informacoes", "")
+    outras = dados.get("outras_informacoes", "").strip()
     pool = context.application.bot_data["pool"]
 
+    # Normalizações finais
+    valor_dec: Decimal = dados.get("valor_dec", Decimal("0"))
+    vencimento_date = parse_date(dados.get("vencimento_str", ""))
+
     cliente_id = await add_cliente(
-        pool, user_id, dados["nome"], dados["telefone"], dados["pacote"],
-        dados["valor"], dados["vencimento"], dados["servidor"], outras
+        pool, user_id,
+        dados["nome"], dados["telefone"], dados["pacote"],
+        valor_dec, vencimento_date, dados.get("servidor", ""), outras
     )
 
     if cliente_id:
@@ -408,8 +446,8 @@ async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"👤 <b>Nome:</b> {dados.get('nome')}\n"
             f"📱 <b>Telefone:</b> {dados.get('telefone')}\n"
             f"📦 <b>Pacote:</b> {dados.get('pacote')}\n"
-            f"💵 <b>Valor:</b> {dados.get('valor')}\n"
-            f"📅 <b>Vencimento:</b> {dados.get('vencimento')}\n"
+            f"💵 <b>Valor:</b> R$ {fmt_money(valor_dec)}\n"
+            f"📅 <b>Vencimento:</b> {fmt_date_br(vencimento_date)}\n"
             f"🖥️ <b>Servidor:</b> {dados.get('servidor')}\n"
             f"📝 <b>Outras:</b> {outras or '-'}"
         )
@@ -420,31 +458,34 @@ async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     return ConversationHandler.END
 
-# =========
+# ==============================
 # Listar clientes com dashboard
-# =========
+# ==============================
 async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     pool = context.application.bot_data["pool"]
     user_id = update.effective_user.id
     async with pool.acquire() as conn:
-        rows = await conn.fetch("SELECT * FROM clientes WHERE user_id=$1 ORDER BY vencimento ASC NULLS LAST", user_id)
+        rows = await conn.fetch(
+            "SELECT * FROM clientes WHERE user_id=$1 ORDER BY vencimento ASC NULLS LAST",
+            user_id
+        )
 
     total = len(rows)
     hoje = date.today()
-    vencem_hoje = sum(1 for r in rows if r["vencimento"] and parse_date(r["vencimento"]) == hoje)
-    vencem_3dias = sum(1 for r in rows if r["vencimento"] and parse_date(r["vencimento"]) and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 3)
-    vencem_7dias = sum(1 for r in rows if r["vencimento"] and parse_date(r["vencimento"]) and 0 <= (parse_date(r["vencimento"]) - hoje).days <= 7)
+    vencem_hoje = sum(1 for r in rows if isinstance(r["vencimento"], date) and r["vencimento"] == hoje)
+    vencem_3dias = sum(1 for r in rows if isinstance(r["vencimento"], date) and 0 <= (r["vencimento"] - hoje).days <= 3)
+    vencem_7dias = sum(1 for r in rows if isinstance(r["vencimento"], date) and 0 <= (r["vencimento"] - hoje).days <= 7)
 
     mes_ini, mes_fim = month_bounds(hoje)
     recebido_mes = Decimal("0")
     previsto_mes = Decimal("0")
     for r in rows:
-        v = parse_money(r["valor"])
-        vcto = parse_date(r["vencimento"]) if r["vencimento"] else None
+        v = Decimal(r["valor"] or 0)
+        vcto: date | None = r["vencimento"] if isinstance(r["vencimento"], date) else None
         if vcto and mes_ini <= vcto <= mes_fim:
             previsto_mes += v
         if (r["status_pagamento"] or "").lower() == "pago":
-            dp = parse_date(r["data_pagamento"] or "")
+            dp = r["data_pagamento"] if isinstance(r["data_pagamento"], date) else None
             if dp and mes_ini <= dp <= mes_fim:
                 recebido_mes += v
 
@@ -462,31 +503,27 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     buttons = []
     for r in rows:
         nome = r["nome"]
-        venc = r["vencimento"]
-        if not venc:
+        vdt = r["vencimento"] if isinstance(r["vencimento"], date) else None
+        if not vdt:
             label = f"⚪ {nome} – sem vencimento"
         else:
-            vdt = parse_date(venc)
-            if vdt:
-                dias = (vdt - hoje).days
-                if dias < 0:
-                    status_emoji = "🔴"
-                elif dias <= 5:
-                    status_emoji = "🟡"
-                else:
-                    status_emoji = "🟢"
+            dias = (vdt - hoje).days
+            if dias < 0:
+                status_emoji = "🔴"
+            elif dias <= 5:
+                status_emoji = "🟡"
             else:
-                status_emoji = "⚪"
-            label = f"{status_emoji} {nome} – {venc}"
+                status_emoji = "🟢"
+            label = f"{status_emoji} {nome} – {fmt_date_br(vdt)}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"cliente_{r['id']}")])
 
     reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
     message = update.effective_message if hasattr(update, "effective_message") else update.message
     await message.reply_html(resumo, reply_markup=reply_markup)
 
-# =========
-# Menu de ações do cliente
-# =========
+# ==============================
+# Menu/Ações por cliente
+# ==============================
 async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -495,16 +532,17 @@ async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     r = await get_cliente(pool, cid, user_id)
     if r:
+        valor_fmt = fmt_money(Decimal(r["valor"] or 0))
         detalhes = (
             f"<b>ID:</b> {r['id']}\n"
             f"👤 <b>Nome:</b> {r['nome']}\n"
             f"📱 <b>Telefone:</b> {r['telefone']}\n"
             f"📦 <b>Pacote:</b> {r['pacote']}\n"
-            f"💵 <b>Valor:</b> {r['valor']}\n"
-            f"📅 <b>Vencimento:</b> {r['vencimento']}\n"
+            f"💵 <b>Valor:</b> R$ {valor_fmt}\n"
+            f"📅 <b>Vencimento:</b> {fmt_date_br(r['vencimento']) if isinstance(r['vencimento'], date) else '-'}\n"
             f"🖥️ <b>Servidor:</b> {r['servidor']}\n"
             f"🔖 <b>Status:</b> {r['status_pagamento']}\n"
-            f"✅ <b>Pago em:</b> {r['data_pagamento'] or '-'}\n"
+            f"✅ <b>Pago em:</b> {fmt_date_br(r['data_pagamento']) if isinstance(r['data_pagamento'], date) else '-'}\n"
             f"📝 <b>Outras:</b> {r['outras_informacoes'] or '-'}"
         )
         kb = [
@@ -516,9 +554,9 @@ async def cliente_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await q.edit_message_text(detalhes, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(kb))
 
-# =========
-# Editar (submenu + teclados)
-# =========
+# ==============================
+# Editar (submenu + campos)
+# ==============================
 async def edit_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -560,7 +598,7 @@ async def edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
         sugestoes = []
         if r and r["pacote"]:
             prox = hoje + timedelta(days=cycle_days_from_package(r["pacote"]))
-            sugestoes.append([prox.strftime("%d/%m/%Y")])
+            sugestoes.append([fmt_date_br(prox)])
         sugestoes.append(["📅 OUTRA DATA"])
         await q.message.reply_text(
             "Escolha a nova data de vencimento ou digite manualmente:",
@@ -572,11 +610,12 @@ async def edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return EDIT_FIELD
 
 async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    novo_valor = update.message.text
+    novo_valor = update.message.text.strip()
     cid = context.user_data.get("edit_cliente")
     campo = context.user_data.get("edit_campo")
     user_id = update.effective_user.id
 
+    # Normalizações e subfluxos
     if campo == "pacote" and novo_valor == "🛠️ PACOTE PERSONALIZADO":
         await update.message.reply_text("Digite o nome do pacote personalizado:", reply_markup=cancel_keyboard)
         return EDIT_FIELD
@@ -590,21 +629,36 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Digite a nova data (DD/MM/AAAA):", reply_markup=cancel_keyboard)
         return EDIT_FIELD
 
-    if campo == "vencimento" and not parse_date(novo_valor):
-        await update.message.reply_text("❗ Data inválida. Use DD/MM/AAAA ou YYYY-MM-DD.")
-        return EDIT_FIELD
+    # Validações por tipo
+    allowed_fields = {"nome","telefone","pacote","valor","vencimento","servidor","outras_informacoes"}
+    if campo not in allowed_fields:
+        await update.message.reply_text("Campo inválido.", reply_markup=menu_keyboard)
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    # Conversões
+    value_to_save = novo_valor
+    if campo == "vencimento":
+        d = parse_date(novo_valor)
+        if not d:
+            await update.message.reply_text("❗ Data inválida. Use DD/MM/AAAA ou YYYY-MM-DD.")
+            return EDIT_FIELD
+        value_to_save = d
+    elif campo == "valor":
+        dec = parse_money(novo_valor)
+        value_to_save = dec
 
     pool = context.application.bot_data["pool"]
     async with pool.acquire() as conn:
-        await conn.execute(f"UPDATE clientes SET {campo}=$1 WHERE id=$2 AND user_id=$3", novo_valor, cid, user_id)
+        await conn.execute(f"UPDATE clientes SET {campo}=$1 WHERE id=$2 AND user_id=$3", value_to_save, cid, user_id)
 
     await update.message.reply_text(f"✅ {campo} atualizado com sucesso.", reply_markup=menu_keyboard)
     context.user_data.clear()
     return ConversationHandler.END
 
-# =========
-# Renovar (padrões corretos)
-# =========
+# ==============================
+# Renovar
+# ==============================
 async def renew(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -627,12 +681,11 @@ async def renew_same_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await q.edit_message_text("Cliente não encontrado.")
         return
     dias = cycle_days_from_package(r["pacote"])
-    base = parse_date(r["vencimento"]) or date.today()
+    base = r["vencimento"] if isinstance(r["vencimento"], date) else date.today()
     novo = base + timedelta(days=dias)
-    novo_str = novo.strftime("%d/%m/%Y")
     async with pool.acquire() as conn:
-        await conn.execute("UPDATE clientes SET vencimento=$1 WHERE id=$2 AND user_id=$3", novo_str, cid, user_id)
-    await q.edit_message_text(f"✅ Renovado! Novo vencimento: {novo_str}")
+        await conn.execute("UPDATE clientes SET vencimento=$1 WHERE id=$2 AND user_id=$3", novo, cid, user_id)
+    await q.edit_message_text(f"✅ Renovado! Novo vencimento: {fmt_date_br(novo)}")
 
 async def renew_new_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -645,20 +698,21 @@ async def renew_new_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def renew_save_new_date(update: Update, context: ContextTypes.DEFAULT_TYPE):
     cid = context.user_data.get("renew_cliente")
     user_id = update.effective_user.id
-    texto = update.message.text
-    if not parse_date(texto):
+    texto = update.message.text.strip()
+    d = parse_date(texto)
+    if not d:
         await update.message.reply_text("❗ Data inválida. Use DD/MM/AAAA ou YYYY-MM-DD.")
         return RENEW_DATE
     pool = context.application.bot_data["pool"]
     async with pool.acquire() as conn:
-        await conn.execute("UPDATE clientes SET vencimento=$1 WHERE id=$2 AND user_id=$3", texto, cid, user_id)
-    await update.message.reply_text(f"✅ Renovado! Novo vencimento: {texto}", reply_markup=menu_keyboard)
+        await conn.execute("UPDATE clientes SET vencimento=$1 WHERE id=$2 AND user_id=$3", d, cid, user_id)
+    await update.message.reply_text(f"✅ Renovado! Novo vencimento: {fmt_date_br(d)}", reply_markup=menu_keyboard)
     context.user_data.clear()
     return ConversationHandler.END
 
-# =========
+# ==============================
 # Excluir
-# =========
+# ==============================
 async def delete_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -679,9 +733,9 @@ async def delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await conn.execute("DELETE FROM clientes WHERE id=$1 AND user_id=$2", cid, user_id)
     await q.edit_message_text("✅ Cliente excluído com sucesso.")
 
-# =========
-# Enviar mensagem (livre) com PRÉ-VISUALIZAÇÃO
-# =========
+# ==============================
+# Mensagem livre com PRÉVIA
+# ==============================
 async def msg_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -702,9 +756,9 @@ async def send_message_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(f"📄 <b>Pré-visualização</b>:\n\n{text}", reply_markup=kb)
     return ConversationHandler.END
 
-# =========
-# USAR TEMPLATE AGORA (para 1 cliente) com PRÉ-VISUALIZAÇÃO
-# =========
+# ==============================
+# Usar Template agora (com PRÉVIA)
+# ==============================
 async def use_template_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -752,9 +806,9 @@ async def use_template_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     ])
     await q.message.reply_html(f"📄 <b>Pré-visualização</b> (template <b>{tpl['nome']}</b>):\n\n{texto}", reply_markup=kb)
 
-# =========
+# ==============================
 # Handlers do PREVIEW (confirmar/cancelar/editar)
-# =========
+# ==============================
 async def preview_send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -764,8 +818,9 @@ async def preview_send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     cid = preview.get("cid")
     text = preview.get("text")
-    # Integração real (WhatsApp/Telegram cliente) pode ser feita aqui.
-    await q.message.reply_text(f"📩 Mensagem enviada para cliente {cid}:\n\n{text}", reply_markup=menu_keyboard)
+    # Integração real de envio pode ser feita aqui.
+    await q.edit_message_text(f"📩 Mensagem enviada para cliente {cid}:\n\n{text}")
+    await q.message.reply_text("Voltei ao menu principal.", reply_markup=menu_keyboard)
     context.user_data.pop("send_preview", None)
 
 async def preview_send_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -798,9 +853,9 @@ async def preview_edit_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_html(f"📄 <b>Pré-visualização</b> (atualizada):\n\n{new_text}", reply_markup=kb)
     return ConversationHandler.END
 
-# =========
+# ==============================
 # Templates: CRUD via bot
-# =========
+# ==============================
 async def templates_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = [
         [KeyboardButton("➕ Adicionar Template")],
@@ -899,9 +954,9 @@ async def template_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await conn.execute("DELETE FROM templates WHERE id=$1", tid)
     await q.edit_message_text("✅ Template excluído.")
 
-# =========
+# ==============================
 # Main
-# =========
+# ==============================
 async def main():
     logging.basicConfig(level=logging.INFO)
     if not TOKEN:
@@ -912,17 +967,17 @@ async def main():
     application = Application.builder().token(TOKEN).build()
     pool = await create_pool()
     await init_db(pool)
-    # cria templates padrão (-2, -1, 0, +1) se não existirem
     await ensure_default_templates(pool)
     application.bot_data["pool"] = pool
 
-    # Conversa de CADASTRO
+    # Conversas
     conv_add = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^ADICIONAR CLIENTE$"), menu_handler)],
         states={
             ASK_CLIENT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_name)],
             ASK_CLIENT_PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_phone)],
             ASK_CLIENT_PACKAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_package)],
+            ASK_CUSTOM_PACKAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_custom_package)],
             ASK_CLIENT_VALUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_value)],
             ASK_CLIENT_DUE: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_due)],
             ASK_CLIENT_SERVER: [MessageHandler(filters.TEXT & ~filters.COMMAND, ask_client_server)],
@@ -932,31 +987,27 @@ async def main():
         allow_reentry=True
     )
 
-    # Conversa de EDIÇÃO
     conv_edit = ConversationHandler(
-        entry_points=[CallbackQueryHandler(edit_field, pattern=r"^editfield_")],
+        entry_points=[CallbackQueryHandler(edit_field, pattern=r"^editfield_\d+_.+$")],
         states={EDIT_FIELD: [MessageHandler(filters.TEXT & ~filters.COMMAND, save_edit)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar)],
         allow_reentry=True
     )
 
-    # Conversa de MENSAGEM (livre)
     conv_msg = ConversationHandler(
-        entry_points=[CallbackQueryHandler(msg_client, pattern=r"^msg_")],
+        entry_points=[CallbackQueryHandler(msg_client, pattern=r"^msg_\d+$")],
         states={SEND_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, send_message_done)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar)],
         allow_reentry=True
     )
 
-    # Conversa de RENOVAÇÃO (nova data)
     conv_renew = ConversationHandler(
-        entry_points=[CallbackQueryHandler(renew_new_handler, pattern=r"^renew_new_\\d+$")],
+        entry_points=[CallbackQueryHandler(renew_new_handler, pattern=r"^renew_new_\d+$")],
         states={RENEW_DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, renew_save_new_date)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar)],
         allow_reentry=True
     )
 
-    # Conversa de TEMPLATES (CRUD)
     conv_templates = ConversationHandler(
         entry_points=[MessageHandler(filters.Regex("^GERENCIAR TEMPLATES$"), templates_menu)],
         states={
@@ -969,9 +1020,8 @@ async def main():
         allow_reentry=True
     )
 
-    # Conversa para editar o texto da PRÉVIA
     conv_preview_edit = ConversationHandler(
-        entry_points=[CallbackQueryHandler(preview_edit_request, pattern=r"^edit_preview_\\d+$")],
+        entry_points=[CallbackQueryHandler(preview_edit_request, pattern=r"^edit_preview_\d+$")],
         states={PREVIEW_EDIT: [MessageHandler(filters.TEXT & ~filters.COMMAND, preview_edit_save)]},
         fallbacks=[MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar)],
         allow_reentry=True
@@ -986,39 +1036,41 @@ async def main():
     application.add_handler(conv_templates)
     application.add_handler(conv_preview_edit)
 
-    # Listar clientes
     application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), listar_clientes))
 
-    # Callbacks específicos de Renovar DEVEM vir antes do genérico
-    application.add_handler(CallbackQueryHandler(renew_same_handler, pattern=r"^renew_same_\\d+$"))
+    # Renovar: handlers específicos antes do genérico
+    application.add_handler(CallbackQueryHandler(renew_same_handler, pattern=r"^renew_same_\d+$"))
 
     # Callbacks de clientes e demais ações
-    application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_\\d+$"))
-    application.add_handler(CallbackQueryHandler(edit_menu, pattern=r"^editmenu_\\d+$"))
-    application.add_handler(CallbackQueryHandler(delete_client, pattern=r"^delete_\\d+$"))
-    application.add_handler(CallbackQueryHandler(delete_yes, pattern=r"^delete_yes_\\d+$"))
-    application.add_handler(CallbackQueryHandler(use_template_menu, pattern=r"^use_tpl_\\d+$"))
-    application.add_handler(CallbackQueryHandler(use_template_select, pattern=r"^use_tplsel_\\d+_\\d+$"))
+    application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_\d+$"))
+    application.add_handler(CallbackQueryHandler(edit_menu, pattern=r"^editmenu_\d+$"))
+    application.add_handler(CallbackQueryHandler(delete_client, pattern=r"^delete_\d+$"))
+    application.add_handler(CallbackQueryHandler(delete_yes, pattern=r"^delete_yes_\d+$"))
+    application.add_handler(CallbackQueryHandler(use_template_menu, pattern=r"^use_tpl_\d+$"))
+    application.add_handler(CallbackQueryHandler(use_template_select, pattern=r"^use_tplsel_\d+_\d+$"))
 
-    # Callback genérico do menu Renovar (após os específicos, padrão restrito)
-    application.add_handler(CallbackQueryHandler(renew, pattern=r"^renew_\\d+$"))
+    # Callback genérico do menu Renovar (após os específicos)
+    application.add_handler(CallbackQueryHandler(renew, pattern=r"^renew_\d+$"))
 
-    # --- Callbacks para CRUD de Templates (inline) ---
-    application.add_handler(CallbackQueryHandler(template_callback, pattern=r"^tpl_\\d+$"))
-    application.add_handler(CallbackQueryHandler(template_edit, pattern=r"^tpl_edit_\\d+$"))
-    application.add_handler(CallbackQueryHandler(template_delete, pattern=r"^tpl_del_\\d+$"))
+    # CRUD de Templates inline
+    application.add_handler(CallbackQueryHandler(template_callback, pattern=r"^tpl_\d+$"))
+    application.add_handler(CallbackQueryHandler(template_edit, pattern=r"^tpl_edit_\d+$"))
+    application.add_handler(CallbackQueryHandler(template_delete, pattern=r"^tpl_del_\d+$"))
 
-    # Scheduler de notificações (opcional)
-    if APSCHED_AVAILABLE:
-        scheduler = AsyncIOScheduler()
-        scheduler.add_job(enviar_notificacoes, "cron", hour=9, args=[application])
-        scheduler.start()
-        logging.info("Scheduler iniciado para notificações diárias às 09:00.")
-    else:
-        logging.warning("APScheduler não disponível. Notificações automáticas desativadas.")
+    # Agendamento diário 09:00 America/Sao_Paulo
+    tz = pytz.timezone("America/Sao_Paulo")
+    application.job_queue.run_daily(
+        job_enviar_notificacoes,
+        time=dtime(hour=9, minute=0, tzinfo=tz),
+        name="avisos_vencimento_diarios"
+    )
+    logging.info("Job diário de notificações agendado para 09:00 America/Sao_Paulo.")
 
     await application.run_polling()
 
+# ==============================
+# Bootstrap
+# ==============================
 import sys, asyncio
 if __name__ == "__main__":
     import nest_asyncio
