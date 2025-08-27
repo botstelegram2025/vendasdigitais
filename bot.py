@@ -129,8 +129,19 @@ async def init_db(pool):
             );
         """)
 
+# ... restante do arquivo ...
+
 async def add_cliente(pool, user_id, nome, telefone, pacote, valor_dec: Decimal,
                       vencimento_date: date | None, servidor, outras_informacoes):
+    print("DEBUG: add_cliente params:")
+    print("user_id:", user_id)
+    print("nome:", nome)
+    print("telefone:", telefone)
+    print("pacote:", pacote)
+    print("valor_dec:", valor_dec, type(valor_dec))
+    print("vencimento_date:", vencimento_date, type(vencimento_date))
+    print("servidor:", servidor)
+    print("outras_informacoes:", outras_informacoes)
     async with pool.acquire() as conn:
         try:
             async with conn.transaction():
@@ -143,8 +154,11 @@ async def add_cliente(pool, user_id, nome, telefone, pacote, valor_dec: Decimal,
             logging.info(f"[user={user_id}] Cliente salvo: id={cid}, nome={nome}, tel={telefone}")
             return cid
         except Exception as e:
+            print("ERRO AO SALVAR CLIENTE:", e)
             logging.exception(f"Erro ao salvar cliente: {e}")
             return None
+
+# ... restante do arquivo ...
 
 async def get_cliente(pool, cid: int, user_id: int):
     async with pool.acquire() as conn:
