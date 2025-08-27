@@ -1,7 +1,7 @@
 import logging
 import os
 import re
-import json  # 👀 LOG/DEBUG
+import json
 from decimal import Decimal, InvalidOperation
 from datetime import date, timedelta, time as dtime
 import pytz
@@ -12,7 +12,7 @@ from telegram import (
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler, CallbackQueryHandler, TypeHandler  # 👀 LOG/DEBUG
+    ContextTypes, ConversationHandler, CallbackQueryHandler, TypeHandler
 )
 import asyncpg
 
@@ -21,6 +21,8 @@ import asyncpg
 # ==============================
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 POSTGRES_URL = os.environ.get("POSTGRES_URL")
+# Toggle para registrar fallbacks finais que somente LOGAM updates não tratados
+DEBUG_UNKNOWN = os.getenv("DEBUG_UNKNOWN_UPDATES", "0") == "1"
 
 # ==============================
 # Estados da conversa
@@ -40,13 +42,11 @@ def parse_date(dtstr: str | None):
     if not dtstr:
         return None
     dtstr = dtstr.strip()
-    # ISO YYYY-MM-DD
-    try:
+    try:  # ISO YYYY-MM-DD
         return date.fromisoformat(dtstr)
     except Exception:
         pass
-    # DD/MM/YYYY
-    try:
+    try:  # DD/MM/YYYY (ou com -)
         d, m, y = map(int, re.split(r"[\/\-]", dtstr))
         return date(y, m, d)
     except Exception:
@@ -90,12 +90,7 @@ def month_bounds(today: date | None = None):
     return start, end
 
 def cycle_days_from_package(pacote: str | None) -> int:
-    mapping = {
-        "📅 MENSAL": 30,
-        "📆 TRIMESTRAL": 90,
-        "📅 SEMESTRAL": 180,
-        "📅 ANUAL": 365,
-    }
+    mapping = {"📅 MENSAL": 30, "📆 TRIMESTRAL": 90, "📅 SEMESTRAL": 180, "📅 ANUAL": 365}
     if not pacote:
         return 30
     key = pacote.strip().upper()
@@ -109,7 +104,6 @@ async def create_pool():
 
 async def init_db(pool):
     async with pool.acquire() as conn:
-        # Tabela clientes com tipos adequados
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS clientes (
                 id SERIAL PRIMARY KEY,
@@ -125,10 +119,8 @@ async def init_db(pool):
                 data_pagamento DATE
             );
         """)
-        # Índices úteis
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_clientes_user_id ON clientes(user_id);")
         await conn.execute("CREATE INDEX IF NOT EXISTS idx_clientes_vencimento ON clientes(vencimento);")
-
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS templates (
                 id SERIAL PRIMARY KEY,
@@ -187,11 +179,8 @@ async def ensure_default_templates(pool):
     async with pool.acquire() as conn:
         for nome, conteudo in defaults.items():
             await conn.execute(
-                """
-                INSERT INTO templates (nome, conteudo)
-                VALUES ($1,$2)
-                ON CONFLICT (nome) DO NOTHING
-                """,
+                """INSERT INTO templates (nome, conteudo)
+                   VALUES ($1,$2) ON CONFLICT (nome) DO NOTHING""",
                 nome, conteudo
             )
 
@@ -214,12 +203,9 @@ def variables_help_text() -> str:
 # ==============================
 def aplicar_template(conteudo: str, cliente: dict) -> str:
     hoje = date.today()
-    venc = cliente["vencimento"]  # já é DATE no banco
+    venc = cliente["vencimento"]  # DATE
     dias_rest = (venc - hoje).days if isinstance(venc, date) else "N/A"
-
-    # valor é Decimal/NUMERIC no banco; formatar
     valor_fmt = fmt_money(Decimal(cliente["valor"])) if cliente["valor"] is not None else "0,00"
-
     return conteudo.format(
         nome=cliente["nome"],
         telefone=cliente["telefone"],
@@ -238,9 +224,8 @@ async def enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
     async with pool.acquire() as conn:
         clientes = await conn.fetch("SELECT * FROM clientes")
     hoje = date.today()
-    # Observação: substitua <seu_chat_id> pelo chat admin ou crie por-usuário
     for c in clientes:
-        venc = c["vencimento"]  # DATE
+        venc = c["vencimento"]
         if not isinstance(venc, date):
             continue
         dias = (venc - hoje).days
@@ -249,7 +234,7 @@ async def enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
             if tpl:
                 msg = aplicar_template(tpl["conteudo"], c)
                 logging.info(f"[Aviso {dias}] Para {c['nome']}: {msg}")
-                # await context.bot.send_message(chat_id=<seu_chat_id>, text=msg)
+                # Ex.: await context.bot.send_message(chat_id=<seu_chat_id>, text=msg)
 
 async def job_enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
     await enviar_notificacoes(context)
@@ -257,7 +242,6 @@ async def job_enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
 # ==============================
 # Teclados
 # ==============================
-# ✅ CANCEL SEMPRE VISÍVEL: adicionamos a linha do cancelar em todos os teclados de seleção.
 cancel_row = ["❌ Cancelar / Menu Principal"]
 
 menu_keyboard = ReplyKeyboardMarkup(
@@ -265,8 +249,7 @@ menu_keyboard = ReplyKeyboardMarkup(
         [KeyboardButton("ADICIONAR CLIENTE")],
         [KeyboardButton("LISTAR CLIENTES")],
         [KeyboardButton("GERENCIAR TEMPLATES")]
-    ],
-    resize_keyboard=True
+    ], resize_keyboard=True
 )
 
 package_keyboard = ReplyKeyboardMarkup(
@@ -274,9 +257,8 @@ package_keyboard = ReplyKeyboardMarkup(
         ["📅 MENSAL", "📆 TRIMESTRAL"],
         ["📅 SEMESTRAL", "📅 ANUAL"],
         ["🛠️ PACOTE PERSONALIZADO"],
-        cancel_row,  # ✅
-    ],
-    resize_keyboard=True, one_time_keyboard=True
+        cancel_row,
+    ], resize_keyboard=True, one_time_keyboard=True
 )
 
 value_keyboard = ReplyKeyboardMarkup(
@@ -284,9 +266,8 @@ value_keyboard = ReplyKeyboardMarkup(
         ["25", "30", "35", "40", "45"],
         ["50", "60", "70", "90"],
         ["💸 OUTRO VALOR"],
-        cancel_row,  # ✅
-    ],
-    resize_keyboard=True, one_time_keyboard=True
+        cancel_row,
+    ], resize_keyboard=True, one_time_keyboard=True
 )
 
 server_keyboard = ReplyKeyboardMarkup(
@@ -294,48 +275,33 @@ server_keyboard = ReplyKeyboardMarkup(
         ["⚡ FAST PLAY", "🏅 GOLD PLAY", "📺 EITV"],
         ["🖥️ X SERVER", "🛰️ UNITV", "🆙 UPPER PLAY"],
         ["🪶 SLIM TV", "🛠️ CRAFT TV", "🖊️ OUTRO SERVIDOR"],
-        cancel_row,  # ✅
-    ],
-    resize_keyboard=True, one_time_keyboard=True
+        cancel_row,
+    ], resize_keyboard=True, one_time_keyboard=True
 )
 
 extra_keyboard = ReplyKeyboardMarkup(
-    [
-        [KeyboardButton("✅ Salvar"), KeyboardButton("❌ Cancelar / Menu Principal")]
-    ],
+    [[KeyboardButton("✅ Salvar"), KeyboardButton("❌ Cancelar / Menu Principal")]],
     resize_keyboard=True, is_persistent=True
 )
 
-cancel_keyboard = ReplyKeyboardMarkup(
-    [cancel_row],
-    resize_keyboard=True
-)
+cancel_keyboard = ReplyKeyboardMarkup([cancel_row], resize_keyboard=True)
 
 # ==============================
 # LOG de todos os updates (antes de tudo)
 # ==============================
 async def log_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Logger universal de updates - roda no group -100 (primeiro)."""
     try:
-        kind = update.effective_update.to_dict().get("update_id", "unknown")
-    except Exception:
-        kind = "unknown"
-
-    # Resumo amigável
-    summary = {
-        "type": update.effective_type,
-        "chat_id": getattr(update.effective_chat, "id", None),
-        "user_id": getattr(update.effective_user, "id", None),
-        "message_text": getattr(getattr(update, "message", None), "text", None),
-        "callback_data": getattr(getattr(update, "callback_query", None), "data", None),
-    }
-    logging.debug(f"[RAW UPDATE SUMMARY] {summary}")
-
-    # JSON bruto
-    try:
+        summary = {
+            "type": update.effective_type,
+            "chat_id": getattr(update.effective_chat, "id", None),
+            "user_id": getattr(update.effective_user, "id", None),
+            "message_text": getattr(getattr(update, "message", None), "text", None),
+            "callback_data": getattr(getattr(update, "callback_query", None), "data", None),
+        }
+        logging.debug(f"[RAW UPDATE SUMMARY] {summary}")
         logging.debug("[RAW UPDATE JSON] %s", json.dumps(update.to_dict(), ensure_ascii=False))
     except Exception as e:
-        logging.exception(f"Falha ao serializar update para JSON: {e}")
+        logging.exception(f"Falha ao serializar update: {e}")
 
 # ==============================
 # Cancelar
@@ -411,7 +377,7 @@ async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if pacote in datas:
             sugestoes_rows.append([fmt_date_br(datas[pacote])])
         sugestoes_rows.append(["📅 OUTRA DATA"])
-        sugestoes_rows.append(cancel_row)  # ✅ CANCEL SEMPRE VISÍVEL
+        sugestoes_rows.append(cancel_row)
         await update.message.reply_text(
             "Escolha a data de vencimento ou digite manualmente:",
             reply_markup=ReplyKeyboardMarkup(sugestoes_rows, resize_keyboard=True, one_time_keyboard=True)
@@ -465,8 +431,7 @@ async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     vencimento_date = parse_date(dados.get("vencimento_str", ""))
 
     cliente_id = await add_cliente(
-        pool, user_id,
-        dados["nome"], dados["telefone"], dados["pacote"],
+        pool, user_id, dados["nome"], dados["telefone"], dados["pacote"],
         valor_dec, vencimento_date, dados.get("servidor", ""), outras
     )
 
@@ -512,7 +477,7 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     previsto_mes = Decimal("0")
     for r in rows:
         v = Decimal(r["valor"] or 0)
-        vcto: date | None = r["vencimento"] if isinstance(r["vencimento"], date) else None
+        vcto = r["vencimento"] if isinstance(r["vencimento"], date) else None
         if vcto and mes_ini <= vcto <= mes_fim:
             previsto_mes += v
         if (r["status_pagamento"] or "").lower() == "pago":
@@ -539,18 +504,12 @@ async def listar_clientes(update: Update, context: ContextTypes.DEFAULT_TYPE):
             label = f"⚪ {nome} – sem vencimento"
         else:
             dias = (vdt - hoje).days
-            if dias < 0:
-                status_emoji = "🔴"
-            elif dias <= 5:
-                status_emoji = "🟡"
-            else:
-                status_emoji = "🟢"
+            status_emoji = "🔴" if dias < 0 else ("🟡" if dias <= 5 else "🟢")
             label = f"{status_emoji} {nome} – {fmt_date_br(vdt)}"
         buttons.append([InlineKeyboardButton(label, callback_data=f"cliente_{r['id']}")])
 
     reply_markup = InlineKeyboardMarkup(buttons) if buttons else None
-    message = update.effective_message if hasattr(update, "effective_message") else update.message
-    await message.reply_html(resumo, reply_markup=reply_markup)
+    await (update.effective_message or update.message).reply_html(resumo, reply_markup=reply_markup)
 
 # ==============================
 # Menu/Ações por cliente
@@ -631,7 +590,7 @@ async def edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
             prox = hoje + timedelta(days=cycle_days_from_package(r["pacote"]))
             sugestoes_rows.append([fmt_date_br(prox)])
         sugestoes_rows.append(["📅 OUTRA DATA"])
-        sugestoes_rows.append(cancel_row)  # ✅ CANCEL SEMPRE VISÍVEL
+        sugestoes_rows.append(cancel_row)
         await q.message.reply_text(
             "Escolha a nova data de vencimento ou digite manualmente:",
             reply_markup=ReplyKeyboardMarkup(sugestoes_rows, resize_keyboard=True, one_time_keyboard=True)
@@ -647,7 +606,6 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
     campo = context.user_data.get("edit_campo")
     user_id = update.effective_user.id
 
-    # Normalizações e subfluxos
     if campo == "pacote" and novo_valor == "🛠️ PACOTE PERSONALIZADO":
         await update.message.reply_text("Digite o nome do pacote personalizado:", reply_markup=cancel_keyboard)
         return EDIT_FIELD
@@ -661,14 +619,12 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Digite a nova data (DD/MM/AAAA):", reply_markup=cancel_keyboard)
         return EDIT_FIELD
 
-    # Validações por tipo
     allowed_fields = {"nome","telefone","pacote","valor","vencimento","servidor","outras_informacoes"}
     if campo not in allowed_fields:
         await update.message.reply_text("Campo inválido.", reply_markup=menu_keyboard)
         context.user_data.clear()
         return ConversationHandler.END
 
-    # Conversões
     value_to_save = novo_valor
     if campo == "vencimento":
         d = parse_date(novo_valor)
@@ -677,8 +633,7 @@ async def save_edit(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return EDIT_FIELD
         value_to_save = d
     elif campo == "valor":
-        dec = parse_money(novo_valor)
-        value_to_save = dec
+        value_to_save = parse_money(novo_valor)
 
     pool = context.application.bot_data["pool"]
     async with pool.acquire() as conn:
@@ -766,7 +721,7 @@ async def delete_yes(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text("✅ Cliente excluído com sucesso.")
 
 # ==============================
-# Mensagem livre com PRÉVIA
+# Mensagem livre + PRÉVIA
 # ==============================
 async def msg_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -789,7 +744,7 @@ async def send_message_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 # ==============================
-# Usar Template agora (com PRÉVIA)
+# Usar Template agora (PRÉVIA)
 # ==============================
 async def use_template_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -808,17 +763,13 @@ async def use_template_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def use_template_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
-    # q.data formato: "use_tplsel_{cid}_{tid}"
     data = q.data
-    prefix = "use_tplsel_"
-    rest = data[len(prefix):]
+    rest = data[len("use_tplsel_"):]
     cid_str, tid_str = rest.split("_", 1)
-    cid = int(cid_str)
-    tid = int(tid_str)
+    cid, tid = int(cid_str), int(tid_str)
 
     pool = context.application.bot_data["pool"]
     user_id = update.effective_user.id
-
     cliente = await get_cliente(pool, cid, user_id)
     if not cliente:
         await q.edit_message_text("Cliente não encontrado.")
@@ -839,7 +790,7 @@ async def use_template_select(update: Update, context: ContextTypes.DEFAULT_TYPE
     await q.message.reply_html(f"📄 <b>Pré-visualização</b> (template <b>{tpl['nome']}</b>):\n\n{texto}", reply_markup=kb)
 
 # ==============================
-# Handlers do PREVIEW (confirmar/cancelar/editar)
+# Handlers do PREVIEW
 # ==============================
 async def preview_send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -848,9 +799,7 @@ async def preview_send_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not preview:
         await q.edit_message_text("Nenhuma mensagem em pré-visualização.")
         return
-    cid = preview.get("cid")
-    text = preview.get("text")
-    # Integração real de envio pode ser feita aqui.
+    cid, text = preview.get("cid"), preview.get("text")
     await q.edit_message_text(f"📩 Mensagem enviada para cliente {cid}:\n\n{text}")
     await q.message.reply_text("Voltei ao menu principal.", reply_markup=menu_keyboard)
     context.user_data.pop("send_preview", None)
@@ -987,24 +936,27 @@ async def template_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text("✅ Template excluído.")
 
 # ==============================
-# Fallbacks globais (desempate e debug)
+# Fallbacks finais (apenas LOG; registro condicional)
 # ==============================
 async def unknown_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
-    logging.warning(f"[UNHANDLED CALLBACK] data={q.data}")
-    await q.message.reply_text("⚠️ Ação não reconhecida. Voltei ao menu.", reply_markup=menu_keyboard)
+    try:
+        if q:
+            await q.answer()
+        logging.debug(f"[UNHANDLED CALLBACK] data={getattr(q, 'data', None)}")
+    except Exception:
+        logging.exception("Erro no unknown_callback")
 
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     txt = getattr(update.message, "text", None)
-    logging.warning(f"[UNHANDLED MESSAGE] text={txt}")
-    await update.message.reply_text("Não entendi. Use o menu abaixo 👇", reply_markup=menu_keyboard)
+    logging.debug(f"[UNHANDLED MESSAGE] text={txt}")
+    # não responde ao usuário
 
 # ==============================
 # Main
 # ==============================
 async def main():
-    logging.basicConfig(level=logging.DEBUG)  # 👀 LOG/DEBUG: nível DEBUG para ver tudo
+    logging.basicConfig(level=logging.DEBUG)
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN não definido.")
     if not POSTGRES_URL:
@@ -1016,8 +968,8 @@ async def main():
     await ensure_default_templates(pool)
     application.bot_data["pool"] = pool
 
-    # 1) Logger de todos os updates (roda primeiro)
-    application.add_handler(TypeHandler(Update, log_all_updates), group=-100)  # 👀 LOG/DEBUG
+    # Logger universal de updates (primeiro)
+    application.add_handler(TypeHandler(Update, log_all_updates), group=-100)
 
     # Conversas
     conv_add = ConversationHandler(
@@ -1076,7 +1028,7 @@ async def main():
         allow_reentry=True
     )
 
-    # Handlers gerais (ordem importa)
+    # Handlers gerais
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_add)
     application.add_handler(conv_edit)
@@ -1085,33 +1037,30 @@ async def main():
     application.add_handler(conv_templates)
     application.add_handler(conv_preview_edit)
 
-    # 2) Handler global do Cancelar (pega fora das conversas também) — grupo 1 para não atropelar fallbacks das conversas
+    # Cancelar global (fora das conversas também)
     application.add_handler(MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar), group=1)
 
     application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), listar_clientes))
 
-    # Renovar: handlers específicos antes do genérico
+    # Renovar: específicos antes do genérico
     application.add_handler(CallbackQueryHandler(renew_same_handler, pattern=r"^renew_same_\d+$"))
 
-    # Callbacks de clientes e demais ações
+    # Callbacks principais
     application.add_handler(CallbackQueryHandler(cliente_callback, pattern=r"^cliente_\d+$"))
     application.add_handler(CallbackQueryHandler(edit_menu, pattern=r"^editmenu_\d+$"))
     application.add_handler(CallbackQueryHandler(delete_client, pattern=r"^delete_\d+$"))
     application.add_handler(CallbackQueryHandler(delete_yes, pattern=r"^delete_yes_\d+$"))
     application.add_handler(CallbackQueryHandler(use_template_menu, pattern=r"^use_tpl_\d+$"))
     application.add_handler(CallbackQueryHandler(use_template_select, pattern=r"^use_tplsel_\d+_\d+$"))
-
-    # Callback genérico do menu Renovar (após os específicos)
     application.add_handler(CallbackQueryHandler(renew, pattern=r"^renew_\d+$"))
-
-    # CRUD de Templates inline
     application.add_handler(CallbackQueryHandler(template_callback, pattern=r"^tpl_\d+$"))
     application.add_handler(CallbackQueryHandler(template_edit, pattern=r"^tpl_edit_\d+$"))
     application.add_handler(CallbackQueryHandler(template_delete, pattern=r"^tpl_del_\d+$"))
 
-    # 3) Fallbacks finais para DEBUG (só disparam se nada acima capturar)
-    application.add_handler(CallbackQueryHandler(unknown_callback, pattern=r".+"), group=10)
-    application.add_handler(MessageHandler(filters.ALL, unknown_message), group=10)
+    # Fallbacks finais — só registramos se DEBUG_UNKNOWN_UPDATES=1
+    if DEBUG_UNKNOWN:
+        application.add_handler(CallbackQueryHandler(unknown_callback, pattern=r".+"), group=10)
+        application.add_handler(MessageHandler(filters.ALL, unknown_message), group=10)
 
     # Agendamento diário 09:00 America/Sao_Paulo
     tz = pytz.timezone("America/Sao_Paulo")
