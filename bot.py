@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import json  # 👀 LOG/DEBUG
 from decimal import Decimal, InvalidOperation
 from datetime import date, timedelta, time as dtime
 import pytz
@@ -11,7 +12,7 @@ from telegram import (
 )
 from telegram.ext import (
     Application, CommandHandler, MessageHandler, filters,
-    ContextTypes, ConversationHandler, CallbackQueryHandler
+    ContextTypes, ConversationHandler, CallbackQueryHandler, TypeHandler  # 👀 LOG/DEBUG
 )
 import asyncpg
 
@@ -248,7 +249,6 @@ async def enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
             if tpl:
                 msg = aplicar_template(tpl["conteudo"], c)
                 logging.info(f"[Aviso {dias}] Para {c['nome']}: {msg}")
-                # Exemplo de envio (defina seu chat-id alvo para testes):
                 # await context.bot.send_message(chat_id=<seu_chat_id>, text=msg)
 
 async def job_enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
@@ -257,6 +257,9 @@ async def job_enviar_notificacoes(context: ContextTypes.DEFAULT_TYPE):
 # ==============================
 # Teclados
 # ==============================
+# ✅ CANCEL SEMPRE VISÍVEL: adicionamos a linha do cancelar em todos os teclados de seleção.
+cancel_row = ["❌ Cancelar / Menu Principal"]
+
 menu_keyboard = ReplyKeyboardMarkup(
     [
         [KeyboardButton("ADICIONAR CLIENTE")],
@@ -270,7 +273,8 @@ package_keyboard = ReplyKeyboardMarkup(
     [
         ["📅 MENSAL", "📆 TRIMESTRAL"],
         ["📅 SEMESTRAL", "📅 ANUAL"],
-        ["🛠️ PACOTE PERSONALIZADO"]
+        ["🛠️ PACOTE PERSONALIZADO"],
+        cancel_row,  # ✅
     ],
     resize_keyboard=True, one_time_keyboard=True
 )
@@ -279,7 +283,8 @@ value_keyboard = ReplyKeyboardMarkup(
     [
         ["25", "30", "35", "40", "45"],
         ["50", "60", "70", "90"],
-        ["💸 OUTRO VALOR"]
+        ["💸 OUTRO VALOR"],
+        cancel_row,  # ✅
     ],
     resize_keyboard=True, one_time_keyboard=True
 )
@@ -288,7 +293,8 @@ server_keyboard = ReplyKeyboardMarkup(
     [
         ["⚡ FAST PLAY", "🏅 GOLD PLAY", "📺 EITV"],
         ["🖥️ X SERVER", "🛰️ UNITV", "🆙 UPPER PLAY"],
-        ["🪶 SLIM TV", "🛠️ CRAFT TV", "🖊️ OUTRO SERVIDOR"]
+        ["🪶 SLIM TV", "🛠️ CRAFT TV", "🖊️ OUTRO SERVIDOR"],
+        cancel_row,  # ✅
     ],
     resize_keyboard=True, one_time_keyboard=True
 )
@@ -301,9 +307,35 @@ extra_keyboard = ReplyKeyboardMarkup(
 )
 
 cancel_keyboard = ReplyKeyboardMarkup(
-    [[KeyboardButton("❌ Cancelar / Menu Principal")]],
+    [cancel_row],
     resize_keyboard=True
 )
+
+# ==============================
+# LOG de todos os updates (antes de tudo)
+# ==============================
+async def log_all_updates(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Logger universal de updates - roda no group -100 (primeiro)."""
+    try:
+        kind = update.effective_update.to_dict().get("update_id", "unknown")
+    except Exception:
+        kind = "unknown"
+
+    # Resumo amigável
+    summary = {
+        "type": update.effective_type,
+        "chat_id": getattr(update.effective_chat, "id", None),
+        "user_id": getattr(update.effective_user, "id", None),
+        "message_text": getattr(getattr(update, "message", None), "text", None),
+        "callback_data": getattr(getattr(update, "callback_query", None), "data", None),
+    }
+    logging.debug(f"[RAW UPDATE SUMMARY] {summary}")
+
+    # JSON bruto
+    try:
+        logging.debug("[RAW UPDATE JSON] %s", json.dumps(update.to_dict(), ensure_ascii=False))
+    except Exception as e:
+        logging.exception(f"Falha ao serializar update para JSON: {e}")
 
 # ==============================
 # Cancelar
@@ -375,13 +407,14 @@ async def ask_client_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
             "📅 SEMESTRAL": hoje + timedelta(days=180),
             "📅 ANUAL": hoje + timedelta(days=365),
         }
-        sugestoes = []
+        sugestoes_rows = []
         if pacote in datas:
-            sugestoes.append([fmt_date_br(datas[pacote])])
-        sugestoes.append(["📅 OUTRA DATA"])
+            sugestoes_rows.append([fmt_date_br(datas[pacote])])
+        sugestoes_rows.append(["📅 OUTRA DATA"])
+        sugestoes_rows.append(cancel_row)  # ✅ CANCEL SEMPRE VISÍVEL
         await update.message.reply_text(
             "Escolha a data de vencimento ou digite manualmente:",
-            reply_markup=ReplyKeyboardMarkup(sugestoes, resize_keyboard=True, one_time_keyboard=True)
+            reply_markup=ReplyKeyboardMarkup(sugestoes_rows, resize_keyboard=True, one_time_keyboard=True)
         )
         return ASK_CLIENT_DUE
 
@@ -391,7 +424,6 @@ async def ask_client_due(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Digite a data de vencimento no formato DD/MM/AAAA:", reply_markup=cancel_keyboard)
         return ASK_CLIENT_DUE
     else:
-        # Guardar string para exibição e date para DB na confirmação
         context.user_data["vencimento_str"] = texto.strip()
         await update.message.reply_text("Escolha o servidor:", reply_markup=server_keyboard)
         return ASK_CLIENT_SERVER
@@ -429,7 +461,6 @@ async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     outras = dados.get("outras_informacoes", "").strip()
     pool = context.application.bot_data["pool"]
 
-    # Normalizações finais
     valor_dec: Decimal = dados.get("valor_dec", Decimal("0"))
     vencimento_date = parse_date(dados.get("vencimento_str", ""))
 
@@ -595,14 +626,15 @@ async def edit_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         r = await get_cliente(pool, cid, user_id)
         hoje = date.today()
-        sugestoes = []
+        sugestoes_rows = []
         if r and r["pacote"]:
             prox = hoje + timedelta(days=cycle_days_from_package(r["pacote"]))
-            sugestoes.append([fmt_date_br(prox)])
-        sugestoes.append(["📅 OUTRA DATA"])
+            sugestoes_rows.append([fmt_date_br(prox)])
+        sugestoes_rows.append(["📅 OUTRA DATA"])
+        sugestoes_rows.append(cancel_row)  # ✅ CANCEL SEMPRE VISÍVEL
         await q.message.reply_text(
             "Escolha a nova data de vencimento ou digite manualmente:",
-            reply_markup=ReplyKeyboardMarkup(sugestoes, resize_keyboard=True, one_time_keyboard=True)
+            reply_markup=ReplyKeyboardMarkup(sugestoes_rows, resize_keyboard=True, one_time_keyboard=True)
         )
         return EDIT_FIELD
     else:
@@ -955,10 +987,24 @@ async def template_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text("✅ Template excluído.")
 
 # ==============================
+# Fallbacks globais (desempate e debug)
+# ==============================
+async def unknown_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    logging.warning(f"[UNHANDLED CALLBACK] data={q.data}")
+    await q.message.reply_text("⚠️ Ação não reconhecida. Voltei ao menu.", reply_markup=menu_keyboard)
+
+async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    txt = getattr(update.message, "text", None)
+    logging.warning(f"[UNHANDLED MESSAGE] text={txt}")
+    await update.message.reply_text("Não entendi. Use o menu abaixo 👇", reply_markup=menu_keyboard)
+
+# ==============================
 # Main
 # ==============================
 async def main():
-    logging.basicConfig(level=logging.INFO)
+    logging.basicConfig(level=logging.DEBUG)  # 👀 LOG/DEBUG: nível DEBUG para ver tudo
     if not TOKEN:
         raise RuntimeError("TELEGRAM_BOT_TOKEN não definido.")
     if not POSTGRES_URL:
@@ -969,6 +1015,9 @@ async def main():
     await init_db(pool)
     await ensure_default_templates(pool)
     application.bot_data["pool"] = pool
+
+    # 1) Logger de todos os updates (roda primeiro)
+    application.add_handler(TypeHandler(Update, log_all_updates), group=-100)  # 👀 LOG/DEBUG
 
     # Conversas
     conv_add = ConversationHandler(
@@ -1027,7 +1076,7 @@ async def main():
         allow_reentry=True
     )
 
-    # Handlers gerais
+    # Handlers gerais (ordem importa)
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_add)
     application.add_handler(conv_edit)
@@ -1035,6 +1084,9 @@ async def main():
     application.add_handler(conv_renew)
     application.add_handler(conv_templates)
     application.add_handler(conv_preview_edit)
+
+    # 2) Handler global do Cancelar (pega fora das conversas também) — grupo 1 para não atropelar fallbacks das conversas
+    application.add_handler(MessageHandler(filters.Regex("^❌ Cancelar / Menu Principal$"), cancelar), group=1)
 
     application.add_handler(MessageHandler(filters.Regex("^LISTAR CLIENTES$"), listar_clientes))
 
@@ -1056,6 +1108,10 @@ async def main():
     application.add_handler(CallbackQueryHandler(template_callback, pattern=r"^tpl_\d+$"))
     application.add_handler(CallbackQueryHandler(template_edit, pattern=r"^tpl_edit_\d+$"))
     application.add_handler(CallbackQueryHandler(template_delete, pattern=r"^tpl_del_\d+$"))
+
+    # 3) Fallbacks finais para DEBUG (só disparam se nada acima capturar)
+    application.add_handler(CallbackQueryHandler(unknown_callback, pattern=r".+"), group=10)
+    application.add_handler(MessageHandler(filters.ALL, unknown_message), group=10)
 
     # Agendamento diário 09:00 America/Sao_Paulo
     tz = pytz.timezone("America/Sao_Paulo")
