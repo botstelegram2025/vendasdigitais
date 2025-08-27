@@ -133,6 +133,38 @@ async def add_cliente(pool, user_id, nome, telefone, pacote, valor_dec: Decimal,
                       vencimento_date: date | None, servidor, outras_informacoes):
     async with pool.acquire() as conn:
         try:
+            # Garantir que valor_dec sempre seja Decimal
+            if not isinstance(valor_dec, Decimal):
+                if valor_dec is None:
+                    valor_dec = Decimal("0")
+                elif isinstance(valor_dec, (int, float)):
+                    valor_dec = Decimal(str(valor_dec))
+                elif isinstance(valor_dec, str):
+                    valor_dec = parse_money(valor_dec)
+                else:
+                    logging.warning(f"[user={user_id}] Tipo inválido para valor_dec: {type(valor_dec)}, usando 0")
+                    valor_dec = Decimal("0")
+            
+            # Garantir que vencimento_date seja date ou None
+            if vencimento_date is not None and not isinstance(vencimento_date, date):
+                if isinstance(vencimento_date, str):
+                    vencimento_date = parse_date(vencimento_date)
+                else:
+                    logging.warning(f"[user={user_id}] Tipo inválido para vencimento_date: {type(vencimento_date)}, usando None")
+                    vencimento_date = None
+            
+            # Garantir que campos opcionais sejam None se vazios
+            if servidor == "":
+                servidor = None
+            if outras_informacoes == "":
+                outras_informacoes = None
+            
+            # Log detalhado antes do insert (debug)
+            logging.debug(f"[user={user_id}] INSERT clientes - nome={nome} (type={type(nome)}), "
+                         f"telefone={telefone} (type={type(telefone)}), pacote={pacote} (type={type(pacote)}), "
+                         f"valor_dec={valor_dec} (type={type(valor_dec)}), vencimento_date={vencimento_date} (type={type(vencimento_date)}), "
+                         f"servidor={servidor} (type={type(servidor)}), outras_informacoes={outras_informacoes} (type={type(outras_informacoes)})")
+            
             async with conn.transaction():
                 cid = await conn.fetchval(
                     """INSERT INTO clientes 
@@ -427,8 +459,35 @@ async def confirm_client(update: Update, context: ContextTypes.DEFAULT_TYPE):
     outras = dados.get("outras_informacoes", "").strip()
     pool = context.application.bot_data["pool"]
 
-    valor_dec: Decimal = dados.get("valor_dec", Decimal("0"))
-    vencimento_date = parse_date(dados.get("vencimento_str", ""))
+    # Garantir que valor_dec sempre seja Decimal
+    valor_raw = dados.get("valor_dec")
+    if isinstance(valor_raw, Decimal):
+        valor_dec = valor_raw
+    elif valor_raw is None:
+        valor_dec = Decimal("0")
+    elif isinstance(valor_raw, (int, float)):
+        valor_dec = Decimal(str(valor_raw))
+    elif isinstance(valor_raw, str):
+        valor_dec = parse_money(valor_raw)
+    else:
+        logging.warning(f"[user={user_id}] Tipo inválido para valor_dec em confirm_client: {type(valor_raw)}, usando 0")
+        valor_dec = Decimal("0")
+    
+    # Garantir que vencimento_date seja date ou None
+    vencimento_raw = dados.get("vencimento_str", "")
+    if isinstance(vencimento_raw, date):
+        vencimento_date = vencimento_raw
+    elif isinstance(vencimento_raw, str):
+        vencimento_date = parse_date(vencimento_raw)
+    elif vencimento_raw is None:
+        vencimento_date = None
+    else:
+        logging.warning(f"[user={user_id}] Tipo inválido para vencimento em confirm_client: {type(vencimento_raw)}, usando None")
+        vencimento_date = None
+
+    # Log dos dados validados antes de chamar add_cliente
+    logging.debug(f"[user={user_id}] confirm_client - dados validados: valor_dec={valor_dec} (type={type(valor_dec)}), "
+                 f"vencimento_date={vencimento_date} (type={type(vencimento_date)})")
 
     cliente_id = await add_cliente(
         pool, user_id, dados["nome"], dados["telefone"], dados["pacote"],
